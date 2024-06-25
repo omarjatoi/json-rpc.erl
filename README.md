@@ -51,9 +51,21 @@ json_rpc_client:close(Client2).
 
 `erlang` and `rebar3` are the two development dependencies. There is a [`flake.nix`](./flake.nix) with a development shell with both dependencies present, you can run the shell with `nix develop` (you may want to pass `--command /bin/zsh` on macOS).
 
+For convenience, there is a [`Makefile`](./Makefile) with some tasks defined in it, run `make`:
+
+```
+Run tasks for json-rpc
+
+  build     compile the json-rpc application
+  deps      get dependencies for the project
+  format    run the rebar3_format formatter
+  test      run all eunit tests
+  sh        launch a nix shell with zsh (erlang, rebar3)
+```
+
 - Get dependencies
   ```
-  rebar3 upgrade --all
+  rebar3 update
   ```
 - Build the project
   ```
