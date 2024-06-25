@@ -1,16 +1,14 @@
 -module(json_rpc_server).
+
 -behaviour(gen_server).
 
 -export([start_link/1, stop/0, register_method/2, set_auth/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
+         code_change/3]).
 
 -define(SERVER, ?MODULE).
 
--record(state, {
-    listener,
-    methods = #{},
-    auth_fun
-}).
+-record(state, {listener, methods = #{}, auth_fun}).
 
 %% API
 start_link(Port) ->
@@ -91,7 +89,8 @@ handle_request(Socket, Data, State) ->
                 Response = process_request(Request, State),
                 send_response(Socket, Response);
             error ->
-                ErrorResponse = create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
+                ErrorResponse =
+                    create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
                 send_response(Socket, ErrorResponse)
         end
     catch
@@ -112,10 +111,13 @@ authenticate(_Request, #state{auth_fun = undefined}) ->
     ok;
 authenticate(Request, #state{auth_fun = AuthFun}) ->
     try AuthFun(Request) of
-        ok -> ok;
-        _ -> error
+        ok ->
+            ok;
+        _ ->
+            error
     catch
-        _:_ -> error
+        _:_ ->
+            error
     end.
 
 process_request(Requests, State) when is_list(Requests) ->
@@ -123,7 +125,8 @@ process_request(Requests, State) when is_list(Requests) ->
 process_request(Request, State) ->
     process_single_request(Request, State).
 
-process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request, State) ->
+process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
+                       State) ->
     Id = maps:get(<<"id">>, Request, null),
     case maps:get(Method, State#state.methods, not_found) of
         not_found ->
@@ -133,8 +136,10 @@ process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = R
             try
                 Result = Fun(Params),
                 case Id of
-                    null -> no_response;  % This is a notification, don't send a response
-                    _ -> create_result_response(Id, Result)
+                    null ->
+                        no_response;  % This is a notification, don't send a response
+                    _ ->
+                        create_result_response(Id, Result)
                 end
             catch
                 _:_ ->
@@ -145,10 +150,16 @@ process_single_request(_, _) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
 create_result_response(Id, Result) ->
-    #{jsonrpc => <<"2.0">>, result => Result, id => Id}.
+    #{jsonrpc => <<"2.0">>,
+      result => Result,
+      id => Id}.
 
 create_error_response(Id, Code, Message) ->
-    #{jsonrpc => <<"2.0">>, error => #{code => Code, message => Message}, id => Id}.
+    #{jsonrpc => <<"2.0">>,
+      error => #{code => Code, message => Message},
+      id => Id}.
 
-extract_id(#{<<"id">> := Id}) -> Id;
-extract_id(_) -> null.
+extract_id(#{<<"id">> := Id}) ->
+    Id;
+extract_id(_) ->
+    null.

@@ -1,4 +1,5 @@
 -module(json_rpc_client).
+
 -export([connect/2, call/4, notify/3, batch/2, close/1, set_auth/2]).
 
 -record(client, {socket, auth}).
@@ -24,20 +25,23 @@ batch(Client, Requests) when is_list(Requests) ->
     send_and_receive(Client, BatchRequests).
 
 create_request(Method, Params, Id) ->
-    Base = #{
-        jsonrpc => <<"2.0">>,
-        method => Method,
-        params => Params
-    },
+    Base =
+        #{jsonrpc => <<"2.0">>,
+          method => Method,
+          params => Params},
     case Id of
-        undefined -> Base;
-        _ -> Base#{id => Id}
+        undefined ->
+            Base;
+        _ ->
+            Base#{id => Id}
     end.
 
 send_and_receive(Client, Request) ->
     case send_request(Client, Request) of
-        ok -> receive_response(Client#client.socket);
-        Error -> Error
+        ok ->
+            receive_response(Client#client.socket);
+        Error ->
+            Error
     end.
 
 send_request(#client{socket = Socket, auth = Auth}, Request) ->
@@ -73,9 +77,13 @@ parse_response(Data) ->
             {error, parse_error}
     end.
 
-parse_single_response(#{<<"jsonrpc">> := <<"2.0">>, <<"result">> := Result, <<"id">> := Id}) ->
+parse_single_response(#{<<"jsonrpc">> := <<"2.0">>,
+                        <<"result">> := Result,
+                        <<"id">> := Id}) ->
     {ok, Result, Id};
-parse_single_response(#{<<"jsonrpc">> := <<"2.0">>, <<"error">> := Error, <<"id">> := Id}) ->
+parse_single_response(#{<<"jsonrpc">> := <<"2.0">>,
+                        <<"error">> := Error,
+                        <<"id">> := Id}) ->
     {error, Error, Id};
 parse_single_response(_) ->
     {error, invalid_response}.

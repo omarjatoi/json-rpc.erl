@@ -42,6 +42,10 @@ json_rpc_client:close(Client2).
 
 ## Development
 
+- Get dependencies
+  ```
+  rebar3 upgrade --all
+  ```
 - Build the project
   ```
   rebar3 compile
@@ -49,6 +53,10 @@ json_rpc_client:close(Client2).
 - Run all tests
   ```
   rebar3 eunit
+  ```
+- Run formatter
+  ```
+  rebar3 format
   ```
 
 ## License
