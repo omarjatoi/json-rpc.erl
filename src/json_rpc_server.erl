@@ -69,7 +69,7 @@ handle_info(accept, State = #state{listener = ListenSocket}) ->
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
-    error_logger:error_msg("Client ~p exited: ~p", [Pid, Reason]),
+    logger:error("Client ~p exited: ~p", [Pid, Reason]),
     {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -90,7 +90,7 @@ handle_client(Socket, State) ->
         {error, closed} ->
             ok;
         {error, Reason} ->
-            error_logger:error_msg("Client socket error: ~p", [Reason])
+            logger:error("Client socket error: ~p", [Reason])
     end.
 
 handle_request(Socket, Data, State) ->
