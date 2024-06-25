@@ -63,22 +63,14 @@ Run tasks for json-rpc
   sh        launch a nix shell with zsh (erlang, rebar3)
 ```
 
-- Get dependencies
-  ```
-  rebar3 update
-  ```
-- Build the project
-  ```
-  rebar3 compile
-  ```
-- Run all tests
-  ```
-  rebar3 eunit
-  ```
-- Run formatter
-  ```
-  rebar3 format
-  ```
+Alternative, you can use `rebar3` directly.
+
+|Command|Description|
+|-|-|
+|`rebar3 update`|Download any dependencies|
+|`rebar3 compile`|Build the project|
+|`rebar3 eunit`|Run all tests|
+|`rebar3 format`|Run the [Erlang formatter](https://github.com/AdRoll/rebar3_format)|
 
 ## License
 
