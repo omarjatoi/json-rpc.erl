@@ -49,6 +49,8 @@ json_rpc_client:close(Client2).
 
 ## Development
 
+`erlang` and `rebar3` are the two development dependencies. There is a [`flake.nix`](./flake.nix) with a development shell with both dependencies present, you can run the shell with `nix develop` (you may want to pass `--command /bin/zsh` on macOS).
+
 - Get dependencies
   ```
   rebar3 upgrade --all
