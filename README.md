@@ -35,16 +35,16 @@ AuthenticatedClient = json_rpc_client:set_auth(Client, <<"secret_token">>).
 {ok, Result, Id} = json_rpc_client:call(AuthenticatedClient, <<"some_method_name">>, #{foo => 1, bar => 2}, 1).
 
 % call "log" with params {"message": "Hello, World!"}
-ok = json_rpc_client:notify(Client2, <<"log">>, #{message => "Hello, World!"}).
+ok = json_rpc_client:notify(AuthenticatedClient, <<"log">>, #{message => "Hello, World!"}).
 
 % make some batched requests
-{ok, Results} = json_rpc_client:batch(Client2, [
+{ok, Results} = json_rpc_client:batch(AuthenticatedClient, [
     {<<"some_method_name">>, #{foo => 1, bar => 2}, 1},
     {<<"log">>, #{message => "Hello, World!"}, undefined}
 ]).
 
 % close the client
-json_rpc_client:close(Client2).
+json_rpc_client:close(AuthenticatedClient).
 ```
 
 ## Development
