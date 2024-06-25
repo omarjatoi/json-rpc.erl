@@ -1,3 +1,0 @@
--module(json-rpc).
-
--export([]).
