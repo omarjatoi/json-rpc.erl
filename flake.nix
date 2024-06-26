@@ -17,6 +17,7 @@
             echo "Entering development shell... type `exit` to quit."
           '';
           buildInputs = with pkgs; [
+            erlfmt
             erlang
             rebar3
           ];
