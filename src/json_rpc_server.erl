@@ -46,7 +46,7 @@ init([Port]) when is_integer(Port), Port > 0, Port < 65536 ->
             {stop, Reason}
     end.
 
-handle_call({register_method, Name, Fun}, _From, State = #state{methods = Methods}) ->
+handle_call({register_method, Name, Fun}, _From, #state{methods = Methods} = State) ->
     {reply, ok, State#state{methods = Methods#{Name => Fun}}};
 handle_call({set_auth, AuthFun}, _From, State) ->
     {reply, ok, State#state{auth_fun = AuthFun}};
@@ -56,7 +56,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info(accept, State = #state{listener = ListenSocket}) ->
+handle_info(accept, #state{listener = ListenSocket} = State) ->
     case gen_tcp:accept(ListenSocket) of
         {ok, Socket} ->
             Pid = spawn_link(fun() -> handle_client(Socket, State) end),

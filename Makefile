@@ -7,6 +7,7 @@ default:
 	@echo "  build     compile the json-rpc application"
 	@echo "  deps      get dependencies for the project"
 	@echo "  format    run the rebar3_format formatter"
+	@echo "  lint      run linter (rebar3_lint)"
 	@echo "  test      run all eunit tests"
 	@echo "  sh        launch a nix shell with zsh (erlang, rebar3)"
 	@echo ""
@@ -19,6 +20,9 @@ deps:
 
 format:
 	rebar3 format
+
+lint:
+	rebar3 lint
 
 test:
 	rebar3 eunit
