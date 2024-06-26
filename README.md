@@ -35,16 +35,16 @@ AuthenticatedClient = json_rpc_client:set_auth(Client, <<"secret_token">>).
 {ok, Result, Id} = json_rpc_client:call(AuthenticatedClient, <<"some_method_name">>, #{foo => 1, bar => 2}, 1).
 
 % call "log" with params {"message": "Hello, World!"}
-ok = json_rpc_client:notify(Client2, <<"log">>, #{message => "Hello, World!"}).
+ok = json_rpc_client:notify(AuthenticatedClient, <<"log">>, #{message => "Hello, World!"}).
 
 % make some batched requests
-{ok, Results} = json_rpc_client:batch(Client2, [
+{ok, Results} = json_rpc_client:batch(AuthenticatedClient, [
     {<<"some_method_name">>, #{foo => 1, bar => 2}, 1},
     {<<"log">>, #{message => "Hello, World!"}, undefined}
 ]).
 
 % close the client
-json_rpc_client:close(Client2).
+json_rpc_client:close(AuthenticatedClient).
 ```
 
 ## Development
@@ -63,22 +63,14 @@ Run tasks for json-rpc
   sh        launch a nix shell with zsh (erlang, rebar3)
 ```
 
-- Get dependencies
-  ```
-  rebar3 update
-  ```
-- Build the project
-  ```
-  rebar3 compile
-  ```
-- Run all tests
-  ```
-  rebar3 eunit
-  ```
-- Run formatter
-  ```
-  rebar3 format
-  ```
+Alternative, you can use `rebar3` directly.
+
+|Command|Description|
+|-|-|
+|`rebar3 update`|Download any dependencies|
+|`rebar3 compile`|Build the project|
+|`rebar3 eunit`|Run all tests|
+|`rebar3 format`|Run the [Erlang formatter](https://github.com/AdRoll/rebar3_format)|
 
 ## License
 
