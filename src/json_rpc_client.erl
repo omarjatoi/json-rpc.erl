@@ -38,9 +38,11 @@ batch(Client, Requests) when is_list(Requests) ->
 
 create_request(Method, Params, Id) ->
     Base =
-        #{jsonrpc => <<"2.0">>,
-          method => Method,
-          params => Params},
+        #{
+            jsonrpc => <<"2.0">>,
+            method => Method,
+            params => Params
+        },
     case Id of
         undefined ->
             Base;
@@ -89,13 +91,17 @@ parse_response(Data) ->
             {error, parse_error}
     end.
 
-parse_single_response(#{<<"jsonrpc">> := <<"2.0">>,
-                        <<"result">> := Result,
-                        <<"id">> := Id}) ->
+parse_single_response(#{
+    <<"jsonrpc">> := <<"2.0">>,
+    <<"result">> := Result,
+    <<"id">> := Id
+}) ->
     {ok, Result, Id};
-parse_single_response(#{<<"jsonrpc">> := <<"2.0">>,
-                        <<"error">> := Error,
-                        <<"id">> := Id}) ->
+parse_single_response(#{
+    <<"jsonrpc">> := <<"2.0">>,
+    <<"error">> := Error,
+    <<"id">> := Id
+}) ->
     {error, Error, Id};
 parse_single_response(_) ->
     {error, invalid_response}.

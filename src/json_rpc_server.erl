@@ -15,8 +15,14 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/0, register_method/2, set_auth/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -137,8 +143,10 @@ process_request(Requests, State) when is_list(Requests) ->
 process_request(Request, State) ->
     process_single_request(Request, State).
 
-process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
-                       State) ->
+process_single_request(
+    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
+    State
+) ->
     Id = maps:get(<<"id">>, Request, null),
     case maps:get(Method, State#state.methods, not_found) of
         not_found ->
@@ -149,7 +157,8 @@ process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = R
                 Result = Fun(Params),
                 case Id of
                     null ->
-                        no_response;  % This is a notification, don't send a response
+                        % This is a notification, don't send a response
+                        no_response;
                     _ ->
                         create_result_response(Id, Result)
                 end
@@ -162,14 +171,18 @@ process_single_request(_, _) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
 create_result_response(Id, Result) ->
-    #{jsonrpc => <<"2.0">>,
-      result => Result,
-      id => Id}.
+    #{
+        jsonrpc => <<"2.0">>,
+        result => Result,
+        id => Id
+    }.
 
 create_error_response(Id, Code, Message) ->
-    #{jsonrpc => <<"2.0">>,
-      error => #{code => Code, message => Message},
-      id => Id}.
+    #{
+        jsonrpc => <<"2.0">>,
+        error => #{code => Code, message => Message},
+        id => Id
+    }.
 
 extract_id(#{<<"id">> := Id}) ->
     Id;

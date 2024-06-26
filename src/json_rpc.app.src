@@ -10,13 +10,13 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
-{application,
- json_rpc,
- [{description, "JSON-RPC 2.0 server and client implementation in Erlang"},
-  {vsn, "0.1.0"},
-  {registered, []},
-  {applications, [kernel, stdlib]},
-  {env, []},
-  {modules, [json_rpc_server, json_rpc_client]},
-  {licenses, ["Apache-2.0"]},
-  {links, [{"GitHub", "https://github.com/omarjatoi/json-rpc"}]}]}.
+{application, json_rpc, [
+    {description, "JSON-RPC 2.0 server and client implementation in Erlang"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, [json_rpc_server, json_rpc_client]},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/omarjatoi/json-rpc"}]}
+]}.
