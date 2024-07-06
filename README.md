@@ -58,9 +58,9 @@ Run tasks for json-rpc
 
   build     compile the json-rpc application
   deps      get dependencies for the project
-  format    run the rebar3_format formatter
+  format    run the erlfmt code formatter
   test      run all eunit tests
-  sh        launch a nix shell with zsh (erlang, rebar3)
+  sh        launch a nix shell with zsh (erlang, rebar3, erlfmt)
 ```
 
 Alternative, you can use `rebar3` directly.
@@ -70,7 +70,7 @@ Alternative, you can use `rebar3` directly.
 |`rebar3 update`|Download any dependencies|
 |`rebar3 compile`|Build the project|
 |`rebar3 eunit`|Run all tests|
-|`rebar3 format`|Run the [Erlang formatter](https://github.com/AdRoll/rebar3_format)|
+|`rebar3 format`|Run the [Erlang formatter](https://github.com/WhatsApp/erlfmt)|
 
 ## License
 
