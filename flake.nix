@@ -19,6 +19,7 @@
           buildInputs = with pkgs; [
             erlfmt
             erlang
+            erlang-ls
             rebar3
           ];
         };
