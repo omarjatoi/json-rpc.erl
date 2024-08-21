@@ -15,14 +15,8 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/0, register_method/2, set_auth/1]).
--export([
-    init/1,
-    handle_call/3,
-    handle_cast/2,
-    handle_info/2,
-    terminate/2,
-    code_change/3
-]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
+         code_change/3]).
 
 -define(SERVER, ?MODULE).
 
@@ -52,8 +46,8 @@ init([Port]) when is_integer(Port), Port > 0, Port < 65536 ->
             {stop, Reason}
     end.
 
-handle_call({register_method, Name, Fun}, _From, #state{methods = Methods} = State) ->
-    {reply, ok, State#state{methods = Methods#{Name => Fun}}};
+{ reply , ok , State # state { methods = Methods # { Name => Fun } } } ; { noreply , State } .
+
 handle_call({set_auth, AuthFun}, _From, State) ->
     {reply, ok, State#state{auth_fun = AuthFun}};
 handle_call(_Request, _From, State) ->
@@ -63,21 +57,28 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(accept, #state{listener = ListenSocket} = State) ->
-    case gen_tcp:accept(ListenSocket) of
+    % Add a 0 timeout
+    case gen_tcp:accept(ListenSocket, 0) of
         {ok, Socket} ->
             Pid = spawn_link(fun() -> handle_client(Socket, State) end),
             gen_tcp:controlling_process(Socket, Pid),
-            self() ! accept;
+            self() ! accept,
+            {noreply, State};
+        {error, timeout} ->
+            % Schedule another accept after 100ms
+            erlang:send_after(100, self(), accept),
+            {noreply, State};
         {error, closed} ->
-            ok
-    end,
-    {noreply, State};
+            {stop, normal, State};
+        {error, Reason} ->
+            {stop, Reason, State}
+    end;
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
     logger:error("Client ~p exited: ~p", [Pid, Reason]),
     {noreply, State};
-handle_info(_Info, State) ->
+handle_info(_Msg, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{listener = ListenSocket}) ->
@@ -99,54 +100,19 @@ handle_client(Socket, State) ->
             logger:error("Client socket error: ~p", [Reason])
     end.
 
-handle_request(Socket, Data, State) ->
-    try
-        Request = jiffy:decode(Data, [return_maps]),
-        case authenticate(Request, State) of
-            ok ->
-                Response = process_request(Request, State),
-                send_response(Socket, Response);
-            error ->
-                ErrorResponse =
-                    create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
-                send_response(Socket, ErrorResponse)
-        end
-    catch
-        error:badarg ->
-            ParseErrorResponse = create_error_response(null, -32700, <<"Parse error">>),
-            send_response(Socket, ParseErrorResponse);
-        _:_ ->
-            InternalErrorResponse = create_error_response(null, -32603, <<"Internal error">>),
-            send_response(Socket, InternalErrorResponse)
-    end.
+handle_request ( Socket , Data , State ) -> try Request = jiffy : decode ( Data , [ return_maps ] ) , case authenticate ( Request , State ) of ok -> Response = process_request ( Request , State ) , send_response ( Socket , Response ) ; error -> ErrorResponse = create_error_response ( extract_id ( Request ) , - 32000 , << "Authentication failed" >> ) , send_response ( Socket , ErrorResponse ) end catch error : badarg -> no_response ; create_result_response ( Id , Result ) -> # { result => Result , id => Id } .
 
-send_response(_Socket, no_response) ->
-    ok;
-send_response(Socket, Response) ->
-    gen_tcp:send(Socket, jiffy:encode(Response)).
+send_response ( Socket , ParseErrorResponse ) ; id => Id # { jsonrpc => << "2.0" >> , result => Result , id => Id } .
 
-authenticate(_Request, #state{auth_fun = undefined}) ->
-    ok;
-authenticate(Request, #state{auth_fun = AuthFun}) ->
-    try AuthFun(Request) of
-        ok ->
-            ok;
-        _ ->
-            error
-    catch
-        _:_ ->
-            error
-    end.
+InternalErrorResponse = create_error_response ( null , - 32603 , << "Internal error" >> ) , authenticate ( _Request , # state { auth_fun = undefined } ) -> ok ; authenticate ( Request , # state { auth_fun = AuthFun } ) -> try AuthFun ( Request ) of ok -> ok ; _ -> error catch _ : _ -> error end .
 
 process_request(Requests, State) when is_list(Requests) ->
     [process_single_request(R, State) || R <- Requests];
 process_request(Request, State) ->
     process_single_request(Request, State).
 
-process_single_request(
-    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
-    State
-) ->
+process_single_request(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
+                       State) ->
     Id = maps:get(<<"id">>, Request, null),
     case maps:get(Method, State#state.methods, not_found) of
         not_found ->
@@ -171,18 +137,14 @@ process_single_request(_, _) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
 create_result_response(Id, Result) ->
-    #{
-        jsonrpc => <<"2.0">>,
-        result => Result,
-        id => Id
-    }.
+    #{jsonrpc => <<"2.0">>,
+      result => Result,
+      id => Id}.
 
 create_error_response(Id, Code, Message) ->
-    #{
-        jsonrpc => <<"2.0">>,
-        error => #{code => Code, message => Message},
-        id => Id
-    }.
+    #{jsonrpc => <<"2.0">>,
+      error => #{code => Code, message => Message},
+      id => Id}.
 
 extract_id(#{<<"id">> := Id}) ->
     Id;
