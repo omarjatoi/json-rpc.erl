@@ -116,8 +116,9 @@ handle_request(Socket, Data, State) ->
                 Response = process_request(Request, State),
                 send_response(Socket, Response);
             error ->
-                ErrorResponse =
-                    create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
+                ErrorResponse = create_error_response(
+                    extract_id(Request), -32000, <<"Authentication failed">>
+                ),
                 send_response(Socket, ErrorResponse)
         end
     catch
@@ -136,14 +137,11 @@ authenticate(_Request, #state{auth_fun = undefined}) ->
 authenticate(Request, #state{auth_fun = AuthFun}) ->
     try
         case AuthFun(Request) of
-            ok ->
-                ok;
-            _ ->
-                error
+            ok -> ok;
+            _ -> error
         end
     catch
-        _:_ ->
-            error
+        _:_ -> error
     end.
 
 process_request([], _State) ->
@@ -154,7 +152,6 @@ process_request(Request, _State) when map_size(Request) == 0 ->
     create_error_response(null, -32600, <<"Invalid Request">>);
 process_request(Request, State) ->
     process_single_request(Request, State).
-
 process_single_request(
     #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
     State
