@@ -64,28 +64,21 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(accept, #state{listener = ListenSocket} = State) ->
-    % Add a 0 timeout
-    case gen_tcp:accept(ListenSocket, 0) of
+    case gen_tcp:accept(ListenSocket) of
         {ok, Socket} ->
             Pid = spawn_link(fun() -> handle_client(Socket, State) end),
             gen_tcp:controlling_process(Socket, Pid),
-            self() ! accept,
-            {noreply, State};
-        {error, timeout} ->
-            % Schedule another accept after 100ms
-            erlang:send_after(100, self(), accept),
-            {noreply, State};
+            self() ! accept;
         {error, closed} ->
-            {stop, normal, State};
-        {error, Reason} ->
-            {stop, Reason, State}
-    end;
+            ok
+    end,
+    {noreply, State};
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
     logger:error("Client ~p exited: ~p", [Pid, Reason]),
     {noreply, State};
-handle_info(_Msg, State) ->
+handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, #state{listener = ListenSocket}) ->
@@ -165,7 +158,7 @@ process_single_request(
                         no_response;
                     _ ->
                         create_result_response(Id, Result)
-                    end
+                end
             catch
                 _:_ ->
                     create_error_response(Id, -32603, <<"Internal error">>)
