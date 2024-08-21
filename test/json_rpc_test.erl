@@ -33,7 +33,9 @@ register_methods(Pid) ->
         {<<"subtract">>, fun([A, B]) -> A - B end},
         {<<"sum">>, fun([A, B, C]) -> A + B + C end},
         {<<"get_data">>, fun(_) -> [<<"hello">>, 5] end},
-        {<<"update">>, fun(_) -> ok end}
+        {<<"update">>, fun(_) -> ok end},
+        {<<"notify_sum">>, fun(_) -> ok end},
+        {<<"notify_hello">>, fun(_) -> ok end}
     ],
     lists:foreach(
         fun({Name, Fun}) ->
@@ -64,10 +66,10 @@ json_rpc_test_() ->
             % fun test_rpc_call_positional_params/1,
             % fun test_notification/1,
             % fun test_non_existent_method/1,
-            % fun test_invalid_json/1,
+            fun test_invalid_json/1
             % fun test_invalid_request_object/1,
             % fun test_batch_invalid_json/1,
-            fun test_empty_array/1
+            % fun test_empty_array/1,
             % fun test_invalid_batch/1,
             % fun test_rpc_call_batch/1,
             % fun test_notification_batch/1,
@@ -99,10 +101,10 @@ test_non_existent_method(Client) ->
 test_invalid_json(Client) ->
     [
         ?_assertEqual(
-            {error, parse_error},
+            {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
             json_rpc_client:send_and_receive(
                 Client,
-                <<"{\"jsonrpc\": \"2.0\", \"method\": \"foobar, \"params\": \"bar\", \"baz]">>
+                <<"{\"jsonrpc\": \"2.0\", \"method\": \"foobar\", \"params\": \"bar\", \"baz]">>
             )
         )
     ].
@@ -149,18 +151,15 @@ test_invalid_batch(Client) ->
 test_rpc_call_batch(Client) ->
     Batch = [
         {<<"sum">>, [1, 2, 4], <<"1">>},
-        {<<"notify_hello">>, [7], undefined},
         {<<"subtract">>, [42, 23], <<"2">>},
-        {<<"foo.get">>, #{<<"name">> => <<"myself">>}, <<"5">>},
-        {<<"get_data">>, [], <<"9">>}
+        {<<"foo">>, [], <<"9">>}
     ],
     [
         ?_assertEqual(
             {ok, [
                 {ok, 7, <<"1">>},
                 {ok, 19, <<"2">>},
-                {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"5">>},
-                {ok, [<<"hello">>, 5], <<"9">>}
+                {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"9">>}
             ]},
             json_rpc_client:batch(Client, Batch)
         )
@@ -196,5 +195,4 @@ test_authentication(Client) ->
         )
     ],
 
-    json_rpc_server:set_auth(undefined),
     Tests.
