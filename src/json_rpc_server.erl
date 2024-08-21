@@ -52,8 +52,9 @@ init([Port]) when is_integer(Port), Port > 0, Port < 65536 ->
             {stop, Reason}
     end.
 
-handle_call({register_method, Name, Fun}, _From, #state{methods = Methods} = State) ->
-    {reply, ok, State#state{methods = Methods#{Name => Fun}}};
+handle_call({register_method, Name, Fun}, _From, State) ->
+    NewMethods = maps:put(Name, Fun, State#state.methods),
+    {reply, ok, State#state{methods = NewMethods}};
 handle_call({set_auth, AuthFun}, _From, State) ->
     {reply, ok, State#state{auth_fun = AuthFun}};
 handle_call(_Request, _From, State) ->
@@ -107,17 +108,15 @@ handle_request(Socket, Data, State) ->
                 Response = process_request(Request, State),
                 send_response(Socket, Response);
             error ->
-                ErrorResponse =
-                    create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
+                ErrorResponse = create_error_response(
+                    extract_id(Request), -32000, <<"Authentication failed">>
+                ),
                 send_response(Socket, ErrorResponse)
         end
     catch
         error:badarg ->
             ParseErrorResponse = create_error_response(null, -32700, <<"Parse error">>),
-            send_response(Socket, ParseErrorResponse);
-        _:_ ->
-            InternalErrorResponse = create_error_response(null, -32603, <<"Internal error">>),
-            send_response(Socket, InternalErrorResponse)
+            send_response(Socket, ParseErrorResponse)
     end.
 
 send_response(_Socket, no_response) ->
@@ -128,21 +127,19 @@ send_response(Socket, Response) ->
 authenticate(_Request, #state{auth_fun = undefined}) ->
     ok;
 authenticate(Request, #state{auth_fun = AuthFun}) ->
-    try AuthFun(Request) of
-        ok ->
-            ok;
-        _ ->
-            error
+    try
+        case AuthFun(Request) of
+            ok -> ok;
+            _ -> error
+        end
     catch
-        _:_ ->
-            error
+        _:_ -> error
     end.
 
 process_request(Requests, State) when is_list(Requests) ->
     [process_single_request(R, State) || R <- Requests];
 process_request(Request, State) ->
     process_single_request(Request, State).
-
 process_single_request(
     #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
     State
