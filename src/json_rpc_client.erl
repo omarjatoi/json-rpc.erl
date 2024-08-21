@@ -33,8 +33,25 @@ notify(Client, Method, Params) when is_binary(Method) ->
     send_request(Client, Request).
 
 batch(Client, Requests) when is_list(Requests) ->
-    BatchRequests = [create_request(M, P, I) || {M, P, I} <- Requests],
-    send_and_receive(Client, BatchRequests).
+    {Notifications, BatchRequests} = lists:partition(
+        fun({_, _, Id}) -> Id =:= undefined end,
+        Requests
+    ),
+
+    NotificationRequests = [create_request(M, P, undefined) || {M, P, _} <- Notifications],
+    BatchRequestsWithIds = [create_request(M, P, I) || {M, P, I} <- BatchRequests],
+
+    % Send notifications
+    [send_request(Client, Req) || Req <- NotificationRequests],
+
+    % Send batch requests and receive responses
+    case BatchRequestsWithIds of
+        [] ->
+            ok;
+        _ ->
+            Result = send_and_receive(Client, BatchRequestsWithIds),
+            Result
+    end.
 
 create_request(Method, Params, Id) ->
     Base =
