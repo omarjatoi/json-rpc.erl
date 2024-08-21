@@ -36,7 +36,7 @@ stop() ->
     gen_server:stop(?SERVER).
 
 register_method(Name, Fun) when is_binary(Name), is_function(Fun, 1) ->
-    gen_server:call(?SERVER, {register_method, Name, Fun}).
+    gen_server:call(?SERVER, {register_method, Name, Fun}, 5000).
 
 set_auth(AuthFun) when is_function(AuthFun, 1) ->
     gen_server:call(?SERVER, {set_auth, AuthFun}).
@@ -64,15 +64,23 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(accept, #state{listener = ListenSocket} = State) ->
-    case gen_tcp:accept(ListenSocket) of
+    % Add a 0 timeout
+    case gen_tcp:accept(ListenSocket, 0) of
         {ok, Socket} ->
             Pid = spawn_link(fun() -> handle_client(Socket, State) end),
             gen_tcp:controlling_process(Socket, Pid),
-            self() ! accept;
+            self() ! accept,
+            {noreply, State};
+        {error, timeout} ->
+            % Schedule another accept after 1000ms
+            erlang:send_after(1000, self(), accept),
+            {noreply, State};
         {error, closed} ->
-            ok
-    end,
-    {noreply, State};
+            {stop, normal, State};
+        {error, Reason} ->
+            logger:error("Error in accept: ~p~n", [Reason]),
+            {stop, Reason, State}
+    end;
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
@@ -108,9 +116,8 @@ handle_request(Socket, Data, State) ->
                 Response = process_request(Request, State),
                 send_response(Socket, Response);
             error ->
-                ErrorResponse = create_error_response(
-                    extract_id(Request), -32000, <<"Authentication failed">>
-                ),
+                ErrorResponse =
+                    create_error_response(extract_id(Request), -32000, <<"Authentication failed">>),
                 send_response(Socket, ErrorResponse)
         end
     catch
@@ -129,17 +136,25 @@ authenticate(_Request, #state{auth_fun = undefined}) ->
 authenticate(Request, #state{auth_fun = AuthFun}) ->
     try
         case AuthFun(Request) of
-            ok -> ok;
-            _ -> error
+            ok ->
+                ok;
+            _ ->
+                error
         end
     catch
-        _:_ -> error
+        _:_ ->
+            error
     end.
 
+process_request([], _State) ->
+    [create_error_response(null, -32600, <<"Invalid Request">>)];
 process_request(Requests, State) when is_list(Requests) ->
     [process_single_request(R, State) || R <- Requests];
+process_request(Request, _State) when map_size(Request) == 0 ->
+    create_error_response(null, -32600, <<"Invalid Request">>);
 process_request(Request, State) ->
     process_single_request(Request, State).
+
 process_single_request(
     #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
     State
