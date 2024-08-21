@@ -63,17 +63,17 @@ cleanup_client(Client) ->
 json_rpc_test_() ->
     {setup, fun start_server/0, fun stop_server/1,
         {foreach, fun setup_client/0, fun cleanup_client/1, [
-            % fun test_rpc_call_positional_params/1,
-            % fun test_notification/1,
-            % fun test_non_existent_method/1,
-            fun test_invalid_json/1
+            fun test_rpc_call_positional_params/1,
+            fun test_notification/1,
+            fun test_non_existent_method/1,
+            % fun test_invalid_json/1,
             % fun test_invalid_request_object/1,
             % fun test_batch_invalid_json/1,
             % fun test_empty_array/1,
             % fun test_invalid_batch/1,
-            % fun test_rpc_call_batch/1,
-            % fun test_notification_batch/1,
-            % fun test_authentication/1
+            fun test_rpc_call_batch/1,
+            fun test_notification_batch/1,
+            fun test_authentication/1
         ]}}.
 
 %%% Individual tests
