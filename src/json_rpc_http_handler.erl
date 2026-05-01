@@ -33,7 +33,11 @@
     <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Invalid Request\",\"code\":-32600}}">>
 ).
 
-init(Req0, State) ->
+init(Req0, State0) ->
+    %% Snapshot per-request config once at handler entry so the hot path
+    %% in handle_body/3 doesn't repeatedly call `application:get_env' +
+    %% the validator on every request.
+    State = State0#{handler_timeout_ms => json_rpc_config:get(handler_timeout_ms)},
     try
         handle(Req0, State)
     catch
@@ -103,7 +107,7 @@ read_full_body(Req0, MaxBody, Acc) ->
 handle_body(Body, Req0, State) ->
     case decode_json(Body) of
         {ok, Parsed} ->
-            Timeout = json_rpc_config:get(handler_timeout_ms),
+            Timeout = maps:get(handler_timeout_ms, State),
             case json_rpc_worker:run(Parsed, Timeout) of
                 {ok, Reply} ->
                     send_reply(Reply, Req0, State);
