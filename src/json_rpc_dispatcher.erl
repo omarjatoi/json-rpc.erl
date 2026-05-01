@@ -31,25 +31,22 @@
 %% `no_response' (for notifications and all-notification batches) or an Erlang
 %% term ready to be jiffy-encoded.
 -spec dispatch(term()) -> reply().
-dispatch(Parsed) ->
-    process_request(Parsed).
-
-%% Internal
-
-process_request([]) ->
+dispatch([]) ->
     create_error_response(null, -32600, <<"Invalid Request">>);
-process_request(Requests) when is_list(Requests) ->
+dispatch(Requests) when is_list(Requests) ->
     Responses = [process_single_request(R) || R <- Requests],
     case [R || R <- Responses, R =/= no_response] of
         [] -> no_response;
         Filtered -> Filtered
     end;
-process_request(Request) when is_map(Request), map_size(Request) == 0 ->
+dispatch(Request) when is_map(Request), map_size(Request) == 0 ->
     create_error_response(null, -32600, <<"Invalid Request">>);
-process_request(Request) when is_map(Request) ->
+dispatch(Request) when is_map(Request) ->
     process_single_request(Request);
-process_request(_Request) ->
+dispatch(_Request) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
+
+%% Internal
 
 process_single_request(Request) when is_map(Request) ->
     %% Extract the id best-effort first so a per-element envelope error can

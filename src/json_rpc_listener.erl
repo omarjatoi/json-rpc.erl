@@ -38,6 +38,9 @@ start_link() ->
 
 -spec init([]) -> {ok, map()} | {stop, term()}.
 init([]) ->
+    %% Trap exits so the supervisor's `shutdown' signal is delivered as a
+    %% message and `terminate/2' runs the graceful drain logic instead of
+    %% the process being killed outright.
     process_flag(trap_exit, true),
     Port = json_rpc_config:get(port),
     MaxBody = json_rpc_config:get(max_body_bytes),

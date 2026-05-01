@@ -18,7 +18,6 @@
 
 -export([init/2]).
 
--define(DEFAULT_MAX_BODY_BYTES, 1048576).
 -define(JSON_HEADERS, #{<<"content-type">> => <<"application/json">>}).
 
 init(Req0, State) ->
@@ -58,7 +57,7 @@ handle_post(Req0, State) ->
     end.
 
 handle_json_post(Req0, State) ->
-    MaxBody = maps:get(max_body_bytes, State, ?DEFAULT_MAX_BODY_BYTES),
+    MaxBody = maps:get(max_body_bytes, State),
     case read_full_body(Req0, MaxBody, <<>>) of
         {ok, Body, Req1} ->
             handle_body(Body, Req1, State);

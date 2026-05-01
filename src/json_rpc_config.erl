@@ -17,7 +17,7 @@
 %% against its expected type and constraints. Defaults live in the app
 %% file (`json_rpc.app.src') under the `env' key.
 
--export([get/1, get/2, validate_all/0]).
+-export([get/1, validate_all/0]).
 
 -type key() ::
     port
@@ -43,15 +43,6 @@ get(Key) ->
             validate(Key, Value);
         undefined ->
             erlang:error(badarg, [Key])
-    end.
-
-%% @doc Fetch a validated config value, returning `Default' if the key is
-%% absent. The default itself is validated.
--spec get(key(), term()) -> term().
-get(Key, Default) ->
-    case application:get_env(json_rpc, Key) of
-        {ok, Value} -> validate(Key, Value);
-        undefined -> validate(Key, Default)
     end.
 
 %% @doc Walk every known key, validating each. Returns `ok' or raises with
