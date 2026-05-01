@@ -19,16 +19,12 @@
 -export([init/2, websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
 init(Req, State) ->
-    %% We do not currently support any subprotocols. If the client offered
-    %% one, refuse the upgrade with 400 Bad Request rather than silently
-    %% ignoring their advertised expectations.
-    case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
-        undefined ->
-            {cowboy_websocket, Req, State};
-        _Offered ->
-            Req1 = cowboy_req:reply(400, #{}, <<>>, Req),
-            {ok, Req1, State}
-    end.
+    %% Accept the upgrade regardless of what (if any) subprotocols the
+    %% client offers. RFC 6455 lets the server simply not select one — by
+    %% omitting the `sec-websocket-protocol' response header — and many
+    %% browser/SDK clients routinely advertise a subprotocol as a hint.
+    %% Refusing the upgrade for that broke interop without buying anything.
+    {cowboy_websocket, Req, State}.
 
 websocket_init(_State) ->
     {[], #{}}.

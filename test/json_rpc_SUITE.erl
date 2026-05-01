@@ -57,7 +57,8 @@
     test_ws_malformed_json/1,
     test_ws_handler_timeout/1,
     test_ws_handler_crash_isolation/1,
-    test_ws_handler_exit_isolation/1
+    test_ws_handler_exit_isolation/1,
+    test_ws_subprotocol_offered/1
 ]).
 
 %% Registry test cases.
@@ -117,6 +118,7 @@ all() ->
         test_ws_handler_timeout,
         test_ws_handler_crash_isolation,
         test_ws_handler_exit_isolation,
+        test_ws_subprotocol_offered,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -733,6 +735,38 @@ test_ws_handler_exit_isolation(Config) ->
     ?assertEqual(
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
         jiffy:decode(RespBin2, [return_maps])
+    ).
+
+%% A client that advertises a `Sec-WebSocket-Protocol' must still be allowed
+%% to upgrade. The server doesn't select any subprotocol, so the upgrade
+%% response carries no `sec-websocket-protocol' header. JSON-RPC traffic
+%% afterwards works normally.
+test_ws_subprotocol_offered(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = gun:ws_upgrade(
+        Conn, "/ws", [{<<"sec-websocket-protocol">>, <<"foo">>}]
+    ),
+    UpgradeHeaders =
+        receive
+            {gun_upgrade, Conn, StreamRef, [<<"websocket">>], Hs} ->
+                Hs;
+            {gun_response, Conn, StreamRef, _, Status, _Hs} ->
+                erlang:error({ws_upgrade_failed, Status})
+        after 5000 ->
+            erlang:error(ws_upgrade_timeout)
+        end,
+    ?assertEqual(
+        undefined,
+        proplists:get_value(<<"sec-websocket-protocol">>, UpgradeHeaders)
+    ),
+    Frame = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 1},
+        jiffy:decode(RespBin, [return_maps])
     ).
 
 %%% WebSocket helpers
