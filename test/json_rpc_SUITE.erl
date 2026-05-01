@@ -678,9 +678,9 @@ test_ws_malformed_json(Config) ->
         jiffy:decode(RespBin, [return_maps])
     ).
 
-%% Same idea as test_http_handler_timeout but over WS. The WS handler emits
-%% a -32603 envelope with id: null on timeout (the spec doesn't guarantee
-%% we can extract the id from arbitrary parsed payloads cheaply).
+%% Same idea as test_http_handler_timeout but over WS — the WS handler
+%% must echo the original request `id' so the client can correlate the
+%% timeout error to the originating call.
 test_ws_handler_timeout(Config) ->
     Conn = ?config(conn, Config),
     StreamRef = ws_upgrade(Conn),
@@ -697,7 +697,7 @@ test_ws_handler_timeout(Config) ->
                 <<"message">> => <<"Internal error">>,
                 <<"data">> => #{<<"reason">> => <<"timeout">>}
             },
-            <<"id">> => null
+            <<"id">> => 1
         },
         jiffy:decode(RespBin, [return_maps])
     ).
@@ -742,13 +742,11 @@ test_ws_handler_exit_isolation(Config) ->
     }),
     gun:ws_send(Conn, StreamRef, {text, Frame1}),
     {ws, {text, RespBin1}} = gun:await(Conn, StreamRef, 5000),
-    %% The id is loose here — a separate change in this PR tightens id
-    %% preservation on WS error envelopes.
     ?assertMatch(
         #{
             <<"jsonrpc">> := <<"2.0">>,
             <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
-            <<"id">> := _
+            <<"id">> := 1
         },
         jiffy:decode(RespBin1, [return_maps])
     ),

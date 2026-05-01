@@ -44,17 +44,19 @@ websocket_handle({text, Frame}, State) ->
                 {ok, Reply} ->
                     {[{text, jiffy:encode(Reply)}], State};
                 {error, timeout} ->
+                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
                     ErrBody = jiffy:encode(
                         json_rpc_dispatcher:create_error_response(
-                            null, -32603, <<"Internal error">>, #{reason => timeout}
+                            Id, -32603, <<"Internal error">>, #{reason => timeout}
                         )
                     ),
                     {[{text, ErrBody}], State};
                 {error, {crash, Class, Reason}} ->
                     ?LOG_ERROR("Handler crashed: ~p:~p", [Class, Reason]),
+                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
                     ErrBody = jiffy:encode(
                         json_rpc_dispatcher:create_error_response(
-                            null, -32603, <<"Internal error">>
+                            Id, -32603, <<"Internal error">>
                         )
                     ),
                     {[{text, ErrBody}], State}

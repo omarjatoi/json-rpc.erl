@@ -99,7 +99,7 @@ handle_body(Body, Req0, State) ->
                 {ok, Reply} ->
                     send_reply(Reply, Req0, State);
                 {error, timeout} ->
-                    Id = call_id_for_error(Parsed),
+                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
                     ErrBody = jiffy:encode(
                         json_rpc_dispatcher:create_error_response(
                             Id, -32603, <<"Internal error">>, #{reason => timeout}
@@ -109,7 +109,7 @@ handle_body(Body, Req0, State) ->
                     {ok, Req, State};
                 {error, {crash, Class, Reason}} ->
                     ?LOG_ERROR("Handler crashed: ~p:~p", [Class, Reason]),
-                    Id = call_id_for_error(Parsed),
+                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
                     ErrBody = jiffy:encode(
                         json_rpc_dispatcher:create_error_response(
                             Id, -32603, <<"Internal error">>
@@ -125,18 +125,6 @@ handle_body(Body, Req0, State) ->
             Req = cowboy_req:reply(200, ?JSON_HEADERS, ErrBody, Req0),
             {ok, Req, State}
     end.
-
-%% For worker timeout/crash on a single-call payload we can preserve the
-%% original id so the client can correlate the error. For batches or any
-%% other shape we fall back to null — there's no single id to attribute
-%% the error to.
-call_id_for_error(Parsed) when is_map(Parsed) ->
-    case maps:find(<<"id">>, Parsed) of
-        {ok, Id} when is_binary(Id); is_integer(Id); is_float(Id); Id =:= null -> Id;
-        _ -> null
-    end;
-call_id_for_error(_Parsed) ->
-    null.
 
 decode_json(Body) ->
     try

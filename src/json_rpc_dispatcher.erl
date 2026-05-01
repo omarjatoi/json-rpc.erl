@@ -14,7 +14,12 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--export([dispatch/1, create_error_response/3, create_error_response/4]).
+-export([
+    dispatch/1,
+    create_error_response/3,
+    create_error_response/4,
+    call_id_for_error/1
+]).
 
 -type id() :: binary() | integer() | float() | null.
 -type reply() :: no_response | map() | [map()].
@@ -183,3 +188,18 @@ create_error_response(Id, Code, Message, Data) ->
         error => #{code => Code, message => Message, data => Data},
         id => Id
     }.
+
+%% Best-effort id extraction from a parsed JSON-RPC payload, used by the
+%% transport layers when synthesising a timeout/crash error envelope. For a
+%% single-call object whose `id' is one of the JSON types permitted by the
+%% spec (string/number/null) we echo it back so the client can correlate the
+%% error to the originating request. For batches and any other shape we fall
+%% back to `null' — there is no single id to attribute the error to.
+-spec call_id_for_error(term()) -> id().
+call_id_for_error(Parsed) when is_map(Parsed) ->
+    case maps:find(<<"id">>, Parsed) of
+        {ok, Id} when is_binary(Id); is_integer(Id); is_float(Id); Id =:= null -> Id;
+        _ -> null
+    end;
+call_id_for_error(_Parsed) ->
+    null.
