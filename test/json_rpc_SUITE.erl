@@ -31,7 +31,11 @@
     test_http_reserved_method_name/1,
     test_http_invalid_params_type/1,
     test_http_handler_throws_jsonrpc_error/1,
+    test_http_handler_throws_reserved_error/1,
     test_http_explicit_null_id_is_call/1,
+    test_http_invalid_id_boolean/1,
+    test_http_invalid_id_array/1,
+    test_http_invalid_id_object/1,
     test_http_batch_mixed/1,
     test_http_all_notification_batch/1,
     test_http_empty_batch/1,
@@ -83,7 +87,11 @@ all() ->
         test_http_reserved_method_name,
         test_http_invalid_params_type,
         test_http_handler_throws_jsonrpc_error,
+        test_http_handler_throws_reserved_error,
         test_http_explicit_null_id_is_call,
+        test_http_invalid_id_boolean,
+        test_http_invalid_id_array,
+        test_http_invalid_id_object,
         test_http_batch_mixed,
         test_http_all_notification_batch,
         test_http_empty_batch,
@@ -162,6 +170,7 @@ register_methods() ->
         {<<"notify_sum">>, {json_rpc_test_methods, notify_sum}},
         {<<"notify_hello">>, {json_rpc_test_methods, notify_hello}},
         {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
+        {<<"throw_reserved_error">>, {json_rpc_test_methods, throw_reserved_error}},
         {<<"slow">>, {json_rpc_test_methods, slow}}
     ],
     lists:foreach(
@@ -264,11 +273,13 @@ test_http_invalid_params_type(Config) ->
 
 test_http_handler_throws_jsonrpc_error(Config) ->
     Conn = ?config(conn, Config),
+    %% throw_error/1 uses an application-defined code (not in the reserved
+    %% range -32768..-32000) so the dispatcher passes it through verbatim.
     ?assertEqual(
         #{
             <<"jsonrpc">> => <<"2.0">>,
             <<"error">> => #{
-                <<"code">> => -32602,
+                <<"code">> => -1,
                 <<"message">> => <<"bad arg">>,
                 <<"data">> => #{<<"detail">> => <<"oops">>}
             },
@@ -279,12 +290,69 @@ test_http_handler_throws_jsonrpc_error(Config) ->
         })
     ).
 
+test_http_handler_throws_reserved_error(Config) ->
+    Conn = ?config(conn, Config),
+    %% A handler throwing a code in the JSON-RPC reserved range (-32768..-32000)
+    %% must not be able to impersonate a framework error. The dispatcher
+    %% substitutes -32603 Internal error.
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32603, <<"message">> => <<"Internal error">>},
+            <<"id">> => <<"r2">>
+        },
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"throw_reserved_error">>,
+            params => [], id => <<"r2">>
+        })
+    ).
+
 test_http_explicit_null_id_is_call(Config) ->
     Conn = ?config(conn, Config),
     Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => null},
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_boolean(Config) ->
+    Conn = ?config(conn, Config),
+    %% Per spec, id MUST be String, Number, or Null. Boolean is invalid.
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": true}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_array(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": [1,2]}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_object(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": {}}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
         jiffy:decode(Body, [return_maps])
     ).
 
@@ -353,7 +421,7 @@ test_http_oversize_body(Config) ->
     ?assertEqual(
         #{
             <<"jsonrpc">> => <<"2.0">>,
-            <<"error">> => #{<<"code">> => -32700, <<"message">> => <<"Parse error">>},
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
             <<"id">> => null
         },
         jiffy:decode(Body, [return_maps])
@@ -461,7 +529,7 @@ test_rpc_discover(Config) ->
     Required = [
         <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
         <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
-        <<"slow">>, <<"rpc.discover">>
+        <<"throw_reserved_error">>, <<"slow">>, <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,

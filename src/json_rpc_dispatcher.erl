@@ -16,7 +16,7 @@
 
 -export([dispatch/1, create_error_response/3, create_error_response/4]).
 
--type id() :: binary() | integer() | null.
+-type id() :: binary() | integer() | float() | null.
 -type reply() :: no_response | map() | [map()].
 
 -export_type([id/0, reply/0]).
@@ -49,12 +49,16 @@ process_request(_Request) ->
 process_single_request(
     #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request
 ) when is_binary(Method), Method =/= <<>> ->
-    Id = extract_call_id(Request),
-    case validate_params(Request) of
-        {ok, Params} ->
-            dispatch_method(Method, Params, Id);
-        {error, Code, Msg} ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+    case extract_call_id(Request) of
+        {error, invalid_id} ->
+            create_error_response(null, -32600, <<"Invalid Request">>);
+        Id ->
+            case validate_params(Request) of
+                {ok, Params} ->
+                    dispatch_method(Method, Params, Id);
+                {error, Code, Msg} ->
+                    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+            end
     end;
 process_single_request(_) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
@@ -71,11 +75,16 @@ validate_params(Request) ->
 
 %% Returns the id for a call/notification:
 %%   - missing key: notification (encoded internally as the atom 'notification')
-%%   - present (including null): call; return the id value verbatim
+%%   - present and one of String/Number/Null per spec: return verbatim
+%%   - present but any other JSON type (boolean, array, object): {error, invalid_id}
 extract_call_id(Request) ->
     case maps:find(<<"id">>, Request) of
         error -> notification;
-        {ok, Id} -> Id
+        {ok, null} -> null;
+        {ok, Id} when is_binary(Id) -> Id;
+        {ok, Id} when is_integer(Id) -> Id;
+        {ok, Id} when is_float(Id) -> Id;
+        {ok, _} -> {error, invalid_id}
     end.
 
 dispatch_method(Method, Params, Id) ->
@@ -97,13 +106,26 @@ invoke(Thunk, Id) ->
         end
     catch
         throw:{jsonrpc_error, Code, Msg} when is_integer(Code), is_binary(Msg) ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg));
+            handle_thrown(Id, Code, Msg, no_data);
         throw:{jsonrpc_error, Code, Msg, Data} when is_integer(Code), is_binary(Msg) ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg, Data));
+            handle_thrown(Id, Code, Msg, {data, Data});
         Class:Reason:Stacktrace ->
             ?LOG_ERROR("Handler error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>))
     end.
+
+%% A handler must use the application-defined error space. Reject any code in
+%% the JSON-RPC reserved range -32768..-32000 — substituting -32603 Internal
+%% error so the framework's own codes can't be impersonated by a handler.
+handle_thrown(Id, Code, _Msg, _Data) when Code >= -32768, Code =< -32000 ->
+    ?LOG_WARNING(
+        "Handler threw reserved JSON-RPC error code ~p; substituting -32603", [Code]
+    ),
+    response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>));
+handle_thrown(Id, Code, Msg, no_data) ->
+    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg));
+handle_thrown(Id, Code, Msg, {data, Data}) ->
+    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg, Data)).
 
 response_or_drop(notification, _Response) -> no_response;
 response_or_drop(_Id, Response) -> Response.

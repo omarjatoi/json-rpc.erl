@@ -20,6 +20,7 @@
     notify_sum/1,
     notify_hello/1,
     throw_error/1,
+    throw_reserved_error/1,
     slow/1
 ]).
 
@@ -36,7 +37,12 @@ notify_sum(_) -> ok.
 notify_hello(_) -> ok.
 
 throw_error(_) ->
-    throw({jsonrpc_error, -32602, <<"bad arg">>, #{<<"detail">> => <<"oops">>}}).
+    throw({jsonrpc_error, -1, <<"bad arg">>, #{<<"detail">> => <<"oops">>}}).
+
+%% A handler attempting to impersonate a framework-reserved error code. The
+%% dispatcher must intercept this and substitute -32603 Internal error.
+throw_reserved_error(_) ->
+    throw({jsonrpc_error, -32601, <<"fake method not found">>}).
 
 %% Sleeps for the number of milliseconds passed as a single positional param.
 slow([Ms]) when is_integer(Ms), Ms >= 0 ->
