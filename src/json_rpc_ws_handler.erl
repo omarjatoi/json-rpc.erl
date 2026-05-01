@@ -24,7 +24,12 @@ init(Req, State) ->
     %% omitting the `sec-websocket-protocol' response header — and many
     %% browser/SDK clients routinely advertise a subprotocol as a hint.
     %% Refusing the upgrade for that broke interop without buying anything.
-    {cowboy_websocket, Req, State}.
+    Opts = #{
+        max_frame_size => json_rpc_config:get(ws_max_frame_bytes),
+        idle_timeout => json_rpc_config:get(ws_idle_timeout_ms),
+        compress => false
+    },
+    {cowboy_websocket, Req, State, Opts}.
 
 websocket_init(_State) ->
     {[], #{}}.

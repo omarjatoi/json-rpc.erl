@@ -58,7 +58,8 @@
     test_ws_handler_timeout/1,
     test_ws_handler_crash_isolation/1,
     test_ws_handler_exit_isolation/1,
-    test_ws_subprotocol_offered/1
+    test_ws_subprotocol_offered/1,
+    test_ws_oversize_frame/1
 ]).
 
 %% Registry test cases.
@@ -119,6 +120,7 @@ all() ->
         test_ws_handler_crash_isolation,
         test_ws_handler_exit_isolation,
         test_ws_subprotocol_offered,
+        test_ws_oversize_frame,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -147,9 +149,10 @@ end_per_suite(_Config) ->
 
 init_per_testcase(TestCase, Config0) ->
     Config1 = maybe_lower_timeout(TestCase, Config0),
+    Config2 = maybe_lower_ws_frame(TestCase, Config1),
     case needs_conn(TestCase) of
         false ->
-            Config1;
+            Config2;
         true ->
             {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
                 transport => tcp,
@@ -157,7 +160,7 @@ init_per_testcase(TestCase, Config0) ->
                 retry => 0
             }),
             {ok, http} = gun:await_up(ConnPid, 5000),
-            [{conn, ConnPid} | Config1]
+            [{conn, ConnPid} | Config2]
     end.
 
 end_per_testcase(_TestCase, Config) ->
@@ -172,6 +175,14 @@ end_per_testcase(_TestCase, Config) ->
             application:set_env(json_rpc, request_timeout_ms, Prev);
         unset ->
             application:unset_env(json_rpc, request_timeout_ms)
+    end,
+    case ?config(saved_ws_max_frame_bytes, Config) of
+        undefined ->
+            ok;
+        {ok, PrevWs} ->
+            application:set_env(json_rpc, ws_max_frame_bytes, PrevWs);
+        unset ->
+            application:unset_env(json_rpc, ws_max_frame_bytes)
     end,
     ok.
 
@@ -191,6 +202,20 @@ maybe_lower_timeout(TestCase, Config) when
     application:set_env(json_rpc, request_timeout_ms, 200),
     [{saved_request_timeout_ms, Saved} | Config];
 maybe_lower_timeout(_TestCase, Config) ->
+    Config.
+
+%% The oversize-WS-frame test needs a tiny ws_max_frame_bytes so we don't
+%% have to ship a multi-MB frame through CT. Saved/restored per testcase
+%% so other WS tests aren't affected.
+maybe_lower_ws_frame(test_ws_oversize_frame, Config) ->
+    Saved =
+        case application:get_env(json_rpc, ws_max_frame_bytes) of
+            {ok, V} -> {ok, V};
+            undefined -> unset
+        end,
+    application:set_env(json_rpc, ws_max_frame_bytes, 4096),
+    [{saved_ws_max_frame_bytes, Saved} | Config];
+maybe_lower_ws_frame(_TestCase, Config) ->
     Config.
 
 %% Test cases that don't open a gun connection in init_per_testcase. The
@@ -768,6 +793,24 @@ test_ws_subprotocol_offered(Config) ->
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 1},
         jiffy:decode(RespBin, [return_maps])
     ).
+
+%% A WS text frame larger than `ws_max_frame_bytes' (set to 4096 in
+%% init_per_testcase) must not OOM the node — Cowboy closes the connection
+%% with status 1009 (message too big) when the frame exceeds the limit.
+test_ws_oversize_frame(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Big = binary:copy(<<"x">>, 8192),
+    gun:ws_send(Conn, StreamRef, {text, Big}),
+    Result =
+        receive
+            {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code};
+            {gun_ws, Conn, StreamRef, close} -> {close, 1006};
+            {gun_down, Conn, _Proto, _Reason, _Killed} -> down
+        after 5000 ->
+            erlang:error(no_close_received)
+        end,
+    ?assertMatch({close, 1009}, Result).
 
 %%% WebSocket helpers
 
