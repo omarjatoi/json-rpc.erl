@@ -12,6 +12,8 @@
 
 -module(json_rpc_client).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([connect/2, call/4, notify/3, batch/2, close/1, set_auth/2]).
 
 -record(client, {socket, auth}).
@@ -41,16 +43,26 @@ batch(Client, Requests) when is_list(Requests) ->
     NotificationRequests = [create_request(M, P, undefined) || {M, P, _} <- Notifications],
     BatchRequestsWithIds = [create_request(M, P, I) || {M, P, I} <- BatchRequests],
 
-    % Send notifications
-    [send_request(Client, Req) || Req <- NotificationRequests],
+    % Send notifications, propagating the first error
+    case send_each(Client, NotificationRequests) of
+        ok ->
+            % Send batch requests and receive responses
+            case BatchRequestsWithIds of
+                [] ->
+                    ok;
+                _ ->
+                    send_and_receive(Client, BatchRequestsWithIds)
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
-    % Send batch requests and receive responses
-    case BatchRequestsWithIds of
-        [] ->
-            ok;
-        _ ->
-            Result = send_and_receive(Client, BatchRequestsWithIds),
-            Result
+send_each(_Client, []) ->
+    ok;
+send_each(Client, [Req | Rest]) ->
+    case send_request(Client, Req) of
+        ok -> send_each(Client, Rest);
+        {error, _} = Error -> Error
     end.
 
 create_request(Method, Params, Id) ->
@@ -104,7 +116,8 @@ parse_response(Data) ->
                 parse_single_response(Response)
         end
     catch
-        error:badarg ->
+        Class:Reason:Stacktrace ->
+            ?LOG_ERROR("Failed to parse response: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             {error, parse_error}
     end.
 
