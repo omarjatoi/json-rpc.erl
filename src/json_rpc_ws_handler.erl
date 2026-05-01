@@ -36,12 +36,27 @@ websocket_init(_State) ->
 websocket_handle({text, Frame}, State) ->
     case decode_json(Frame) of
         {ok, Parsed} ->
-            Reply = json_rpc_dispatcher:dispatch(Parsed),
-            case Reply of
-                no_response ->
+            Timeout = json_rpc_config:get(request_timeout_ms),
+            case json_rpc_worker:run(Parsed, Timeout) of
+                {ok, no_response} ->
                     {[], State};
-                _ ->
-                    {[{text, jiffy:encode(Reply)}], State}
+                {ok, Reply} ->
+                    {[{text, jiffy:encode(Reply)}], State};
+                {error, timeout} ->
+                    ErrBody = jiffy:encode(
+                        json_rpc_dispatcher:create_error_response(
+                            null, -32603, <<"Internal error">>, #{reason => timeout}
+                        )
+                    ),
+                    {[{text, ErrBody}], State};
+                {error, {crash, Class, Reason}} ->
+                    ?LOG_ERROR("Handler crashed: ~p:~p", [Class, Reason]),
+                    ErrBody = jiffy:encode(
+                        json_rpc_dispatcher:create_error_response(
+                            null, -32603, <<"Internal error">>
+                        )
+                    ),
+                    {[{text, ErrBody}], State}
             end;
         {error, parse_error} ->
             ErrBody = jiffy:encode(
