@@ -63,7 +63,8 @@
     test_ws_binary_frame/1,
     test_ws_push/1,
     test_ws_publish/1,
-    test_ws_subscriber_cleanup_on_close/1
+    test_ws_subscriber_cleanup_on_close/1,
+    test_ws_drain_on_shutdown/1
 ]).
 
 %% Registry test cases.
@@ -129,6 +130,7 @@ all() ->
         test_ws_push,
         test_ws_publish,
         test_ws_subscriber_cleanup_on_close,
+        test_ws_drain_on_shutdown,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -233,6 +235,7 @@ needs_conn(test_app_lifecycle) -> false;
 needs_conn(test_register_rpc_reserved) -> false;
 needs_conn(test_register_invalid_handler) -> false;
 needs_conn(test_register_full) -> false;
+needs_conn(test_ws_drain_on_shutdown) -> false;
 needs_conn(_) -> true.
 
 %%% Method registration
@@ -955,6 +958,40 @@ wait_for_pg_cleanup(Group, Budget) ->
         _ ->
             timer:sleep(50),
             wait_for_pg_cleanup(Group, Budget - 50)
+    end.
+
+%% Open a WS connection, then stop the application from a separate
+%% process. The WS handler must receive the drain broadcast and emit a
+%% 1001 close frame within the drain window. Restart the app on the way
+%% out so later tests keep working.
+test_ws_drain_on_shutdown(_Config) ->
+    {ok, Conn} = gun:open(?HOST, ?PORT, #{
+        transport => tcp, protocols => [http], retry => 0
+    }),
+    {ok, http} = gun:await_up(Conn, 5000),
+    try
+        StreamRef = ws_upgrade_on(Conn),
+        Self = self(),
+        Stopper = spawn(fun() ->
+            ok = application:stop(json_rpc),
+            Self ! {stopped, self()}
+        end),
+        Result =
+            receive
+                {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code}
+            after 6000 ->
+                erlang:error(no_close_received)
+            end,
+        ?assertEqual({close, 1001}, Result),
+        receive
+            {stopped, Stopper} -> ok
+        after 6000 ->
+            erlang:error(stop_did_not_complete)
+        end
+    after
+        gun:close(Conn),
+        {ok, _} = application:ensure_all_started(json_rpc),
+        register_methods()
     end.
 
 %%% WebSocket helpers

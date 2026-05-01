@@ -32,6 +32,10 @@ init(Req, State) ->
     {cowboy_websocket, Req, State, Opts}.
 
 websocket_init(_State) ->
+    %% Join the connection-wide drain group so the listener can broadcast a
+    %% close request during shutdown. `pg' monitors members and removes
+    %% them on exit, so no explicit cleanup in `terminate/3' is required.
+    ok = pg:join(json_rpc, json_rpc_ws_connections, self()),
     {[], #{}}.
 
 websocket_handle({text, Frame}, State) ->
@@ -81,6 +85,11 @@ websocket_info({json_rpc_push, Frame}, State) ->
     %% frame is already an encoded JSON-RPC Notification; emit it as a
     %% text frame.
     {[{text, Frame}], State};
+websocket_info(json_rpc_drain, State) ->
+    %% Listener is shutting down. Send a 1001 (Going Away) close frame so
+    %% the client knows to reconnect elsewhere; Cowboy will tear the
+    %% connection down once the close frame is flushed.
+    {[{close, 1001, <<"server shutting down">>}], State};
 websocket_info(_Info, State) ->
     {[], State}.
 
