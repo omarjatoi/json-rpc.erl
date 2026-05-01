@@ -118,9 +118,7 @@ dispatch_method(Method, Params, Id) ->
         not_found ->
             response_or_drop(Id, create_error_response(call_id(Id), -32601, <<"Method not found">>));
         {ok, {mfa, M, F}} ->
-            invoke(fun() -> apply(M, F, [Params]) end, Id);
-        {ok, {fun_, Fun}} ->
-            invoke(fun() -> Fun(Params) end, Id)
+            invoke(fun() -> apply(M, F, [Params]) end, Id)
     end.
 
 invoke(Thunk, Id) ->
