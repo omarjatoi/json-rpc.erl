@@ -27,6 +27,11 @@
     test_rpc_call_positional_params/1,
     test_notification/1,
     test_non_existent_method/1,
+    test_invalid_json/1,
+    test_invalid_request_object/1,
+    test_batch_invalid_json/1,
+    test_empty_array/1,
+    test_invalid_batch/1,
     test_rpc_call_batch/1,
     test_notification_batch/1,
     test_authentication/1
@@ -42,11 +47,11 @@ all() ->
         test_rpc_call_positional_params,
         test_notification,
         test_non_existent_method,
-        % test_invalid_json,
-        % test_invalid_request_object,
-        % test_batch_invalid_json,
-        % test_empty_array,
-        % test_invalid_batch,
+        test_invalid_json,
+        test_invalid_request_object,
+        test_batch_invalid_json,
+        test_empty_array,
+        test_invalid_batch,
         test_rpc_call_batch,
         test_notification_batch,
         test_authentication
@@ -136,50 +141,55 @@ test_non_existent_method(Config) ->
         json_rpc_client:call(Client, <<"foobar">>, [], <<"1">>)
     ).
 
-% test_invalid_json(Config) ->
-%     Client = ?config(client, Config),
-%     ?assertEqual(
-%         {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
-%         json_rpc_client:send_and_receive(
-%             Client,
-%             <<"{\"jsonrpc\": \"2.0\", \"method\": \"foobar\", \"params\": \"bar\", \"baz]">>
-%         )
-%     ).
+test_invalid_json(Config) ->
+    Client = ?config(client, Config),
+    ?assertEqual(
+        {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
+        json_rpc_client:raw_request(
+            Client,
+            <<"{\"jsonrpc\": \"2.0\", \"method\": \"foobar\", \"params\": \"bar\", \"baz]">>
+        )
+    ).
 
-% test_invalid_request_object(Config) ->
-%     Client = ?config(client, Config),
-%     ?assertEqual(
-%         {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-%         json_rpc_client:call(Client, 1, <<"bar">>, null)
-%     ).
+test_invalid_request_object(Config) ->
+    Client = ?config(client, Config),
+    %% A non-binary method (here, a number) is an invalid Request object.
+    %% We use raw_request to bypass the client-side is_binary(Method) guard.
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": 1, \"params\": \"bar\"}">>,
+    ?assertEqual(
+        {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
+        json_rpc_client:raw_request(Client, Payload)
+    ).
 
-% test_batch_invalid_json(Config) ->
-%     Client = ?config(client, Config),
-%     ?assertEqual(
-%         {error, parse_error},
-%         json_rpc_client:send_and_receive(
-%             Client,
-%             <<"[{\"jsonrpc\": \"2.0\", \"method\": \"sum\", \"params\": [1,2,4], \"id\": \"1\"},{\"jsonrpc\": \"2.0\", \"method\"]">>
-%         )
-%     ).
+test_batch_invalid_json(Config) ->
+    Client = ?config(client, Config),
+    ?assertEqual(
+        {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
+        json_rpc_client:raw_request(
+            Client,
+            <<"[{\"jsonrpc\": \"2.0\", \"method\": \"sum\", \"params\": [1,2,4], \"id\": \"1\"},{\"jsonrpc\": \"2.0\", \"method\"]">>
+        )
+    ).
 
-% test_empty_array(Config) ->
-%     Client = ?config(client, Config),
-%     ?assertEqual(
-%         {ok, [{error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null}]},
-%         json_rpc_client:batch(Client, [])
-%     ).
+test_empty_array(Config) ->
+    Client = ?config(client, Config),
+    %% Per spec, empty batch must return a single Invalid Request object,
+    %% NOT an array. batch/2 short-circuits on [] so we use raw_request.
+    ?assertEqual(
+        {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
+        json_rpc_client:raw_request(Client, <<"[]">>)
+    ).
 
-% test_invalid_batch(Config) ->
-%     Client = ?config(client, Config),
-%     ?assertEqual(
-%         {ok, [
-%             {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-%             {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-%             {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null}
-%         ]},
-%         json_rpc_client:send_and_receive(Client, <<"[1,2,3]">>)
-%     ).
+test_invalid_batch(Config) ->
+    Client = ?config(client, Config),
+    ?assertEqual(
+        {ok, [
+            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
+            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
+            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null}
+        ]},
+        json_rpc_client:raw_request(Client, <<"[1,2,3]">>)
+    ).
 
 test_rpc_call_batch(Config) ->
     Client = ?config(client, Config),
