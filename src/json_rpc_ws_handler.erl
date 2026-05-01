@@ -18,30 +18,47 @@
 
 -export([init/2, websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
-init(Req, State) ->
+%% Pre-encoded constant parse-error envelope. The WS endpoint emits this
+%% on any frame that fails JSON parsing; there is no request id to echo
+%% and the body never varies. The exact byte sequence matches what
+%% `jiffy:encode/1' produces for the equivalent map; see
+%% `test_ws_malformed_json' for the round-trip assertion.
+-define(PARSE_ERROR_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Parse error\",\"code\":-32700}}">>
+).
+
+init(Req, _State) ->
     %% Accept the upgrade regardless of what (if any) subprotocols the
     %% client offers. RFC 6455 lets the server simply not select one — by
     %% omitting the `sec-websocket-protocol' response header — and many
     %% browser/SDK clients routinely advertise a subprotocol as a hint.
     %% Refusing the upgrade for that broke interop without buying anything.
+    %%
+    %% Snapshot config values once at upgrade so the per-frame hot path
+    %% doesn't go back through `application:get_env' + the validator on
+    %% every text frame. The Cowboy ws options use the same snapshot.
+    MaxFrame = json_rpc_config:get(ws_max_frame_bytes),
+    IdleTimeout = json_rpc_config:get(ws_idle_timeout_ms),
+    HandlerTimeout = json_rpc_config:get(handler_timeout_ms),
     Opts = #{
-        max_frame_size => json_rpc_config:get(ws_max_frame_bytes),
-        idle_timeout => json_rpc_config:get(ws_idle_timeout_ms),
+        max_frame_size => MaxFrame,
+        idle_timeout => IdleTimeout,
         compress => false
     },
+    State = #{handler_timeout_ms => HandlerTimeout},
     {cowboy_websocket, Req, State, Opts}.
 
-websocket_init(_State) ->
+websocket_init(State) ->
     %% Join the connection-wide drain group so the listener can broadcast a
     %% close request during shutdown. `pg' monitors members and removes
     %% them on exit, so no explicit cleanup in `terminate/3' is required.
     ok = pg:join(json_rpc, json_rpc_ws_connections, self()),
-    {[], #{}}.
+    {[], State}.
 
 websocket_handle({text, Frame}, State) ->
     case decode_json(Frame) of
         {ok, Parsed} ->
-            Timeout = json_rpc_config:get(request_timeout_ms),
+            Timeout = maps:get(handler_timeout_ms, State),
             case json_rpc_worker:run(Parsed, Timeout) of
                 {ok, no_response} ->
                     {[], State};
@@ -66,10 +83,7 @@ websocket_handle({text, Frame}, State) ->
                     {[{text, ErrBody}], State}
             end;
         {error, parse_error} ->
-            ErrBody = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32700, <<"Parse error">>)
-            ),
-            {[{text, ErrBody}], State}
+            {[{text, ?PARSE_ERROR_BODY}], State}
     end;
 websocket_handle({binary, _Data}, State) ->
     %% JSON-RPC framing on WS is text-only. Close the connection with

@@ -39,8 +39,8 @@
 -define(TABLE, ?MODULE).
 -define(BUILTIN_DISCOVER, <<"rpc.discover">>).
 
--type handler() :: {module(), atom()} | fun((term()) -> term()).
--type stored_handler() :: {mfa, module(), atom()} | {fun_, fun((term()) -> term())}.
+-type handler() :: {module(), atom()}.
+-type stored_handler() :: {mfa, module(), atom()}.
 -type method_name() :: binary().
 
 -export_type([handler/0, method_name/0]).
@@ -61,7 +61,7 @@ register_method(Name, Handler) ->
         ok ->
             case validate_handler(Handler) of
                 {ok, Stored} ->
-                    gen_server:call(?MODULE, {register, Name, Handler, Stored}, 5000);
+                    gen_server:call(?MODULE, {register, Name, Stored}, 5000);
                 {error, _} = E ->
                     E
             end;
@@ -96,14 +96,14 @@ discover(_Params) ->
 
 -spec init([]) -> {ok, map()}.
 init([]) ->
-    _ = ets:new(?TABLE, [set, named_table, public, {read_concurrency, true}]),
+    _ = ets:new(?TABLE, [set, named_table, protected, {read_concurrency, true}]),
     %% Insert the built-in discovery method directly; it bypasses the
     %% reserved-namespace check by design.
     true = ets:insert_new(?TABLE, {?BUILTIN_DISCOVER, {mfa, ?MODULE, discover}}),
     ?LOG_DEBUG("json_rpc_methods: registered built-in ~s", [?BUILTIN_DISCOVER]),
     {ok, #{}}.
 
-handle_call({register, Name, OriginalHandler, Stored}, _From, State) ->
+handle_call({register, Name, Stored}, _From, State) ->
     Max = json_rpc_config:get(max_methods),
     Existing = ets:member(?TABLE, Name),
     case (not Existing) andalso ets:info(?TABLE, size) >= Max of
@@ -111,7 +111,6 @@ handle_call({register, Name, OriginalHandler, Stored}, _From, State) ->
             {reply, {error, registry_full}, State};
         false ->
             true = ets:insert(?TABLE, {Name, Stored}),
-            maybe_warn_raw_fun(Name, OriginalHandler),
             ?LOG_DEBUG("json_rpc_methods: registered ~s", [Name]),
             {reply, ok, State}
     end;
@@ -149,15 +148,5 @@ validate_name(N) ->
 
 validate_handler({M, F}) when is_atom(M), is_atom(F) ->
     {ok, {mfa, M, F}};
-validate_handler(Fun) when is_function(Fun, 1) ->
-    {ok, {fun_, Fun}};
 validate_handler(H) ->
     {error, {invalid_handler, H}}.
-
-maybe_warn_raw_fun(Name, Fun) when is_function(Fun, 1) ->
-    ?LOG_WARNING(
-        "json_rpc: registering ~p as a raw fun is deprecated; pass {Module, Function} instead",
-        [Name]
-    );
-maybe_warn_raw_fun(_Name, _Other) ->
-    ok.

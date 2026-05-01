@@ -31,14 +31,15 @@ yields a `-32700` envelope as a text frame.
 ### Register a method
 
 ```erlang
-ok = json_rpc_server:register_method(
+ok = json_rpc_methods:register_method(
     <<"subtract">>,
-    fun([A, B]) -> A - B end
+    {my_handlers, subtract}
 ).
 ```
 
-Handlers are arity-1 functions. They may surface application-level errors by
-throwing the structured tuple `{jsonrpc_error, Code, Msg}` or
+Handlers are `{Module, Function}` pairs invoked as arity-1 (the function
+receives the JSON-RPC `params` value). They may surface application-level
+errors by throwing the structured tuple `{jsonrpc_error, Code, Msg}` or
 `{jsonrpc_error, Code, Msg, Data}`; the values flow through to the JSON-RPC
 `error` object verbatim.
 
@@ -87,7 +88,7 @@ Set these via `application:set_env/3` (or `sys.config`) before
 | `port`             | `8080`        | TCP port for the Cowboy listener. |
 | `max_body_bytes`   | `1_048_576`   | Per-request body cap. Overflow → `413` with a `-32700` body. |
 | `max_connections`  | `1_024`       | `ranch`'s `max_connections` for the listener. |
-| `num_acceptors`    | `100`         | Number of acceptor processes. |
+| `num_acceptors`    | `10`          | Number of acceptor processes. |
 | `idle_timeout_ms`  | `60_000`      | Cowboy `idle_timeout` (applies to keep-alive HTTP and WebSocket). |
 
 ## Securing your endpoint

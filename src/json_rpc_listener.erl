@@ -38,6 +38,9 @@ start_link() ->
 
 -spec init([]) -> {ok, map()} | {stop, term()}.
 init([]) ->
+    %% Trap exits so the supervisor's `shutdown' signal is delivered as a
+    %% message and `terminate/2' runs the graceful drain logic instead of
+    %% the process being killed outright.
     process_flag(trap_exit, true),
     Port = json_rpc_config:get(port),
     MaxBody = json_rpc_config:get(max_body_bytes),
@@ -61,7 +64,11 @@ init([]) ->
         env => #{dispatch => Dispatch},
         idle_timeout => IdleTimeout,
         max_keepalive => infinity,
-        request_timeout => RequestTimeout
+        request_timeout => RequestTimeout,
+        %% Pin to HTTP/1.1: our `request_timeout' knob is HTTP/1.1-only,
+        %% and silently accepting an h2c upgrade would leave the
+        %% transport-level idle wait unset on HTTP/2 connections.
+        protocols => [http]
     },
     case cowboy:start_clear(?LISTENER, TransportOpts, ProtocolOpts) of
         {ok, _ListenerPid} ->

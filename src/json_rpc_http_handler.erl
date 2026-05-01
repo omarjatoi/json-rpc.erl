@@ -18,10 +18,26 @@
 
 -export([init/2]).
 
--define(DEFAULT_MAX_BODY_BYTES, 1048576).
 -define(JSON_HEADERS, #{<<"content-type">> => <<"application/json">>}).
 
-init(Req0, State) ->
+%% Pre-encoded constant error envelopes. These are emitted before any
+%% parsing has happened (parse failure, oversize body), so there is no
+%% request id to echo and the body never varies. The exact byte sequence
+%% matches what `jiffy:encode/1' produces for the equivalent map; see
+%% `test_http_malformed_json' and `test_http_oversize_body' for the
+%% round-trip assertions.
+-define(PARSE_ERROR_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Parse error\",\"code\":-32700}}">>
+).
+-define(INVALID_REQUEST_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Invalid Request\",\"code\":-32600}}">>
+).
+
+init(Req0, State0) ->
+    %% Snapshot per-request config once at handler entry so the hot path
+    %% in handle_body/3 doesn't repeatedly call `application:get_env' +
+    %% the validator on every request.
+    State = State0#{handler_timeout_ms => json_rpc_config:get(handler_timeout_ms)},
     try
         handle(Req0, State)
     catch
@@ -58,7 +74,7 @@ handle_post(Req0, State) ->
     end.
 
 handle_json_post(Req0, State) ->
-    MaxBody = maps:get(max_body_bytes, State, ?DEFAULT_MAX_BODY_BYTES),
+    MaxBody = maps:get(max_body_bytes, State),
     case read_full_body(Req0, MaxBody, <<>>) of
         {ok, Body, Req1} ->
             handle_body(Body, Req1, State);
@@ -66,10 +82,7 @@ handle_json_post(Req0, State) ->
             %% The body was rejected at the size cap before any parsing, so
             %% -32700 Parse error is wrong. Use -32600 Invalid Request and
             %% keep the 413 status code.
-            Body = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32600, <<"Invalid Request">>)
-            ),
-            Req = cowboy_req:reply(413, ?JSON_HEADERS, Body, Req1),
+            Req = cowboy_req:reply(413, ?JSON_HEADERS, ?INVALID_REQUEST_BODY, Req1),
             {ok, Req, State}
     end.
 
@@ -94,7 +107,7 @@ read_full_body(Req0, MaxBody, Acc) ->
 handle_body(Body, Req0, State) ->
     case decode_json(Body) of
         {ok, Parsed} ->
-            Timeout = json_rpc_config:get(request_timeout_ms),
+            Timeout = maps:get(handler_timeout_ms, State),
             case json_rpc_worker:run(Parsed, Timeout) of
                 {ok, Reply} ->
                     send_reply(Reply, Req0, State);
@@ -119,10 +132,7 @@ handle_body(Body, Req0, State) ->
                     {ok, Req, State}
             end;
         {error, parse_error} ->
-            ErrBody = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32700, <<"Parse error">>)
-            ),
-            Req = cowboy_req:reply(200, ?JSON_HEADERS, ErrBody, Req0),
+            Req = cowboy_req:reply(200, ?JSON_HEADERS, ?PARSE_ERROR_BODY, Req0),
             {ok, Req, State}
     end.
 

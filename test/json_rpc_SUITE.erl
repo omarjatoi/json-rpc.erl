@@ -72,7 +72,8 @@
     test_rpc_discover/1,
     test_register_rpc_reserved/1,
     test_register_invalid_handler/1,
-    test_register_full/1
+    test_register_full/1,
+    test_methods_table_is_protected/1
 ]).
 
 %% Application lifecycle test cases.
@@ -135,6 +136,7 @@ all() ->
         test_register_rpc_reserved,
         test_register_invalid_handler,
         test_register_full,
+        test_methods_table_is_protected,
         test_app_drain,
         %% Lifecycle tests must run last since they stop the application.
         test_app_lifecycle
@@ -178,13 +180,13 @@ end_per_testcase(_TestCase, Config) ->
         undefined -> ok;
         ConnPid -> gun:close(ConnPid)
     end,
-    case ?config(saved_request_timeout_ms, Config) of
+    case ?config(saved_handler_timeout_ms, Config) of
         undefined ->
             ok;
         {ok, Prev} ->
-            application:set_env(json_rpc, request_timeout_ms, Prev);
+            application:set_env(json_rpc, handler_timeout_ms, Prev);
         unset ->
-            application:unset_env(json_rpc, request_timeout_ms)
+            application:unset_env(json_rpc, handler_timeout_ms)
     end,
     case ?config(saved_ws_max_frame_bytes, Config) of
         undefined ->
@@ -196,7 +198,7 @@ end_per_testcase(_TestCase, Config) ->
     end,
     ok.
 
-%% The handler-timeout cases need a small request_timeout_ms so the test
+%% The handler-timeout cases need a small handler_timeout_ms so the test
 %% can sleep past it without slowing the suite. Save and restore the
 %% original value so test_app_drain (which uses the slow handler at 800ms)
 %% and other tests aren't affected.
@@ -205,12 +207,12 @@ maybe_lower_timeout(TestCase, Config) when
     TestCase =:= test_ws_handler_timeout
 ->
     Saved =
-        case application:get_env(json_rpc, request_timeout_ms) of
+        case application:get_env(json_rpc, handler_timeout_ms) of
             {ok, V} -> {ok, V};
             undefined -> unset
         end,
-    application:set_env(json_rpc, request_timeout_ms, 200),
-    [{saved_request_timeout_ms, Saved} | Config];
+    application:set_env(json_rpc, handler_timeout_ms, 200),
+    [{saved_handler_timeout_ms, Saved} | Config];
 maybe_lower_timeout(_TestCase, Config) ->
     Config.
 
@@ -235,6 +237,7 @@ needs_conn(test_app_lifecycle) -> false;
 needs_conn(test_register_rpc_reserved) -> false;
 needs_conn(test_register_invalid_handler) -> false;
 needs_conn(test_register_full) -> false;
+needs_conn(test_methods_table_is_protected) -> false;
 needs_conn(test_ws_drain_on_shutdown) -> false;
 needs_conn(_) -> true.
 
@@ -563,7 +566,7 @@ test_http_unsupported_media_type(Config) ->
     {Status, _Hs, _Body} = raw_post(Conn, Payload, Headers),
     ?assertEqual(415, Status).
 
-%% A handler that sleeps past request_timeout_ms (lowered to 200ms in
+%% A handler that sleeps past handler_timeout_ms (lowered to 200ms in
 %% init_per_testcase) must produce -32603 with data.reason = timeout, and
 %% the HTTP status must remain 200.
 test_http_handler_timeout(Config) ->
@@ -1080,6 +1083,30 @@ test_register_full(_Config) ->
             undefined -> application:unset_env(json_rpc, max_methods)
         end
     end.
+
+%% A foreign process must not be able to bypass the gen_server's
+%% validation by writing to the ETS table directly. The table is created
+%% as `protected', so only the owner (the json_rpc_methods gen_server)
+%% may write; foreign writes raise `error:badarg'.
+test_methods_table_is_protected(_Config) ->
+    Self = self(),
+    Pid = spawn(fun() ->
+        Result =
+            try ets:insert(json_rpc_methods, {<<"rogue">>, {mfa, ?MODULE, dummy_handler}}) of
+                Other -> {ok, Other}
+            catch
+                Class:Reason -> {Class, Reason}
+            end,
+        Self ! {result, Result}
+    end),
+    receive
+        {result, R} ->
+            ?assertMatch({error, badarg}, R)
+    after 5000 ->
+        erlang:error({foreign_writer_did_not_finish, Pid})
+    end,
+    %% And the rogue entry must not be present in the registry.
+    ?assertEqual(not_found, json_rpc_methods:lookup(<<"rogue">>)).
 
 %%% Application lifecycle test cases
 

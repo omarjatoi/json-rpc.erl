@@ -17,7 +17,7 @@
 %% against its expected type and constraints. Defaults live in the app
 %% file (`json_rpc.app.src') under the `env' key.
 
--export([get/1, get/2, validate_all/0]).
+-export([get/1, validate_all/0]).
 
 -type key() ::
     port
@@ -26,6 +26,7 @@
     | num_acceptors
     | idle_timeout_ms
     | request_timeout_ms
+    | handler_timeout_ms
     | drain_timeout_ms
     | max_methods
     | ws_max_frame_bytes
@@ -44,15 +45,6 @@ get(Key) ->
             erlang:error(badarg, [Key])
     end.
 
-%% @doc Fetch a validated config value, returning `Default' if the key is
-%% absent. The default itself is validated.
--spec get(key(), term()) -> term().
-get(Key, Default) ->
-    case application:get_env(json_rpc, Key) of
-        {ok, Value} -> validate(Key, Value);
-        undefined -> validate(Key, Default)
-    end.
-
 %% @doc Walk every known key, validating each. Returns `ok' or raises with
 %% `{invalid_config, Key, Value, Reason}'. Call this before starting the
 %% supervisor so misconfiguration fails fast with a clear error.
@@ -65,6 +57,7 @@ validate_all() ->
         num_acceptors,
         idle_timeout_ms,
         request_timeout_ms,
+        handler_timeout_ms,
         drain_timeout_ms,
         max_methods,
         ws_max_frame_bytes,
@@ -99,6 +92,10 @@ validate(request_timeout_ms, V) when is_integer(V), V > 0 ->
     V;
 validate(request_timeout_ms, V) ->
     bad(request_timeout_ms, V, <<"must be a positive integer">>);
+validate(handler_timeout_ms, V) when is_integer(V), V > 0 ->
+    V;
+validate(handler_timeout_ms, V) ->
+    bad(handler_timeout_ms, V, <<"must be a positive integer">>);
 validate(drain_timeout_ms, V) when is_integer(V), V >= 0 ->
     V;
 validate(drain_timeout_ms, V) ->
