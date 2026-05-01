@@ -61,7 +61,11 @@ init([]) ->
         env => #{dispatch => Dispatch},
         idle_timeout => IdleTimeout,
         max_keepalive => infinity,
-        request_timeout => RequestTimeout
+        request_timeout => RequestTimeout,
+        %% Pin to HTTP/1.1: our `request_timeout' knob is HTTP/1.1-only,
+        %% and silently accepting an h2c upgrade would leave the
+        %% transport-level idle wait unset on HTTP/2 connections.
+        protocols => [http]
     },
     case cowboy:start_clear(?LISTENER, TransportOpts, ProtocolOpts) of
         {ok, _ListenerPid} ->
