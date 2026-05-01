@@ -68,7 +68,11 @@ websocket_handle({text, Frame}, State) ->
             {[{text, ErrBody}], State}
     end;
 websocket_handle({binary, _Data}, State) ->
-    {[], State};
+    %% JSON-RPC framing on WS is text-only. Close the connection with
+    %% status 1003 (Unsupported Data) rather than silently dropping the
+    %% frame, so a client that sends binary by mistake gets explicit
+    %% feedback instead of a stalled stream.
+    {[{close, 1003, <<"binary frames not supported">>}], State};
 websocket_handle(_Frame, State) ->
     {[], State}.
 

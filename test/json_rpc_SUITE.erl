@@ -59,7 +59,8 @@
     test_ws_handler_crash_isolation/1,
     test_ws_handler_exit_isolation/1,
     test_ws_subprotocol_offered/1,
-    test_ws_oversize_frame/1
+    test_ws_oversize_frame/1,
+    test_ws_binary_frame/1
 ]).
 
 %% Registry test cases.
@@ -121,6 +122,7 @@ all() ->
         test_ws_handler_exit_isolation,
         test_ws_subprotocol_offered,
         test_ws_oversize_frame,
+        test_ws_binary_frame,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -809,6 +811,21 @@ test_ws_oversize_frame(Config) ->
             erlang:error(no_close_received)
         end,
     ?assertMatch({close, 1009}, Result).
+
+%% A binary frame on the WS endpoint must close the connection with
+%% status 1003 (Unsupported Data) — JSON-RPC framing is text-only and
+%% silently dropping the frame leaves the client hanging.
+test_ws_binary_frame(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    gun:ws_send(Conn, StreamRef, {binary, <<"junk">>}),
+    Result =
+        receive
+            {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code}
+        after 5000 ->
+            erlang:error(no_close_received)
+        end,
+    ?assertMatch({close, 1003}, Result).
 
 %%% WebSocket helpers
 
