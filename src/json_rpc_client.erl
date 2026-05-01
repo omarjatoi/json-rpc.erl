@@ -12,10 +12,25 @@
 
 -module(json_rpc_client).
 
--export([connect/2, call/4, notify/3, batch/2, close/1, set_auth/2]).
+-include_lib("kernel/include/logger.hrl").
+
+-export([connect/2, call/4, notify/3, batch/2, close/1, set_auth/2, raw_request/2]).
 
 -record(client, {socket, auth}).
 
+-opaque client() :: #client{}.
+-type id() :: binary() | integer() | null.
+-type params() :: list() | map().
+-type rpc_error() :: #{binary() => term()}.
+-type response() ::
+    {ok, term(), id()}
+    | {error, rpc_error(), id()}
+    | {error, invalid_response}.
+-type batch_request() :: {binary(), params(), id() | undefined}.
+
+-export_type([client/0, id/0, params/0, rpc_error/0, response/0]).
+
+-spec connect(string(), inet:port_number()) -> {ok, client()} | {error, term()}.
 connect(Host, Port) when is_list(Host), is_integer(Port), Port > 0, Port < 65536 ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}, {active, false}]) of
         {ok, Socket} ->
@@ -24,14 +39,19 @@ connect(Host, Port) when is_list(Host), is_integer(Port), Port > 0, Port < 65536
             Error
     end.
 
+-spec call(client(), binary(), params(), id()) ->
+    response() | {error, term()}.
 call(Client, Method, Params, Id) when is_binary(Method) ->
     Request = create_request(Method, Params, Id),
     send_and_receive(Client, Request).
 
+-spec notify(client(), binary(), params()) -> ok | {error, term()}.
 notify(Client, Method, Params) when is_binary(Method) ->
     Request = create_request(Method, Params, undefined),
     send_request(Client, Request).
 
+-spec batch(client(), [batch_request()]) ->
+    ok | {ok, [response()]} | {error, term()}.
 batch(Client, Requests) when is_list(Requests) ->
     {Notifications, BatchRequests} = lists:partition(
         fun({_, _, Id}) -> Id =:= undefined end,
@@ -41,16 +61,26 @@ batch(Client, Requests) when is_list(Requests) ->
     NotificationRequests = [create_request(M, P, undefined) || {M, P, _} <- Notifications],
     BatchRequestsWithIds = [create_request(M, P, I) || {M, P, I} <- BatchRequests],
 
-    % Send notifications
-    [send_request(Client, Req) || Req <- NotificationRequests],
+    % Send notifications, propagating the first error
+    case send_each(Client, NotificationRequests) of
+        ok ->
+            % Send batch requests and receive responses
+            case BatchRequestsWithIds of
+                [] ->
+                    ok;
+                _ ->
+                    send_and_receive(Client, BatchRequestsWithIds)
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
-    % Send batch requests and receive responses
-    case BatchRequestsWithIds of
-        [] ->
-            ok;
-        _ ->
-            Result = send_and_receive(Client, BatchRequestsWithIds),
-            Result
+send_each(_Client, []) ->
+    ok;
+send_each(Client, [Req | Rest]) ->
+    case send_request(Client, Req) of
+        ok -> send_each(Client, Rest);
+        {error, _} = Error -> Error
     end.
 
 create_request(Method, Params, Id) ->
@@ -104,7 +134,8 @@ parse_response(Data) ->
                 parse_single_response(Response)
         end
     catch
-        error:badarg ->
+        Class:Reason:Stacktrace ->
+            ?LOG_ERROR("Failed to parse response: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             {error, parse_error}
     end.
 
@@ -123,8 +154,25 @@ parse_single_response(#{
 parse_single_response(_) ->
     {error, invalid_response}.
 
+-spec close(client()) -> ok.
 close(#client{socket = Socket}) ->
     gen_tcp:close(Socket).
 
+-spec set_auth(client(), term()) -> client().
 set_auth(Client, Auth) ->
     Client#client{auth = Auth}.
+
+%% @doc Low-level escape hatch for tests: send the given binary payload
+%% verbatim and parse whatever the server replies with. Bypasses request
+%% encoding entirely so that test cases can inject malformed JSON or
+%% arbitrary structures to exercise server-side error paths. NOT part of
+%% the supported public API for application code.
+-spec raw_request(client(), binary()) ->
+    response() | {ok, [response()]} | {error, term()}.
+raw_request(#client{socket = Socket}, Payload) when is_binary(Payload) ->
+    case gen_tcp:send(Socket, Payload) of
+        ok ->
+            receive_response(Socket);
+        {error, _} = Error ->
+            Error
+    end.
