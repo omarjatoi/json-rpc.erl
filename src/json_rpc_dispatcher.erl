@@ -14,60 +14,50 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--export([dispatch/2, create_error_response/3, create_error_response/4]).
+-export([dispatch/1, create_error_response/3, create_error_response/4]).
 
 -type id() :: binary() | integer() | null.
--type method_fun() :: fun((term()) -> term()).
--type methods() :: #{binary() => method_fun()}.
 -type reply() :: no_response | map() | [map()].
 
--export_type([id/0, method_fun/0, methods/0, reply/0]).
+-export_type([id/0, reply/0]).
 
-%% @doc Dispatch a parsed JSON-RPC payload (single request or batch) against
-%% the given methods map. Returns either `no_response' (for notifications and
-%% all-notification batches) or an Erlang term ready to be jiffy-encoded.
--spec dispatch(term(), methods()) -> reply().
-dispatch(Parsed, Methods) ->
-    process_request(Parsed, Methods).
+%% @doc Dispatch a parsed JSON-RPC payload (single request or batch). Looks
+%% each method up in the `json_rpc_methods' ETS registry. Returns either
+%% `no_response' (for notifications and all-notification batches) or an Erlang
+%% term ready to be jiffy-encoded.
+-spec dispatch(term()) -> reply().
+dispatch(Parsed) ->
+    process_request(Parsed).
 
 %% Internal
 
-process_request([], _Methods) ->
+process_request([]) ->
     create_error_response(null, -32600, <<"Invalid Request">>);
-process_request(Requests, Methods) when is_list(Requests) ->
-    Responses = [process_single_request(R, Methods) || R <- Requests],
+process_request(Requests) when is_list(Requests) ->
+    Responses = [process_single_request(R) || R <- Requests],
     case [R || R <- Responses, R =/= no_response] of
         [] -> no_response;
         Filtered -> Filtered
     end;
-process_request(Request, _Methods) when is_map(Request), map_size(Request) == 0 ->
+process_request(Request) when is_map(Request), map_size(Request) == 0 ->
     create_error_response(null, -32600, <<"Invalid Request">>);
-process_request(Request, Methods) when is_map(Request) ->
-    process_single_request(Request, Methods);
-process_request(_Request, _Methods) ->
+process_request(Request) when is_map(Request) ->
+    process_single_request(Request);
+process_request(_Request) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
 process_single_request(
-    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request,
-    Methods
+    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request
 ) when is_binary(Method), Method =/= <<>> ->
     Id = extract_call_id(Request),
-    case is_reserved_method(Method) of
-        true ->
-            response_or_drop(Id, create_error_response(call_id(Id), -32601, <<"Method not found">>));
-        false ->
-            case validate_params(Request) of
-                {ok, Params} ->
-                    dispatch_method(Method, Params, Id, Methods);
-                {error, Code, Msg} ->
-                    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
-            end
+    case validate_params(Request) of
+        {ok, Params} ->
+            dispatch_method(Method, Params, Id);
+        {error, Code, Msg} ->
+            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
     end;
-process_single_request(_, _) ->
+process_single_request(_) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
-
-is_reserved_method(<<"rpc.", _/binary>>) -> true;
-is_reserved_method(_) -> false.
 
 validate_params(Request) ->
     case maps:find(<<"params">>, Request) of
@@ -88,17 +78,19 @@ extract_call_id(Request) ->
         {ok, Id} -> Id
     end.
 
-dispatch_method(Method, Params, Id, Methods) ->
-    case maps:get(Method, Methods, not_found) of
+dispatch_method(Method, Params, Id) ->
+    case json_rpc_methods:lookup(Method) of
         not_found ->
             response_or_drop(Id, create_error_response(call_id(Id), -32601, <<"Method not found">>));
-        Fun when is_function(Fun, 1) ->
-            invoke(Fun, Params, Id)
+        {ok, {mfa, M, F}} ->
+            invoke(fun() -> apply(M, F, [Params]) end, Id);
+        {ok, {fun_, Fun}} ->
+            invoke(fun() -> Fun(Params) end, Id)
     end.
 
-invoke(Fun, Params, Id) ->
+invoke(Thunk, Id) ->
     try
-        Result = Fun(Params),
+        Result = Thunk(),
         case Id of
             notification -> no_response;
             _ -> create_result_response(Id, Result)

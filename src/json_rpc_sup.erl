@@ -20,15 +20,30 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
+    %% rest_for_one: if the methods registry crashes and restarts empty, we
+    %% also restart the listener so it doesn't keep serving -32601 against a
+    %% half-populated registry mid-flight.
+    SupFlags = #{strategy => rest_for_one, intensity => 5, period => 10},
+    DrainMs = json_rpc_config:get(drain_timeout_ms),
+    %% The listener's terminate/2 may take up to drain_timeout_ms; give the
+    %% supervisor enough budget to wait for it to finish before brutal-killing.
+    ListenerShutdown = DrainMs + 1000,
     Children = [
         #{
-            id => json_rpc_server,
-            start => {json_rpc_server, start_link, []},
+            id => json_rpc_methods,
+            start => {json_rpc_methods, start_link, []},
             restart => permanent,
             shutdown => 5000,
             type => worker,
-            modules => [json_rpc_server]
+            modules => [json_rpc_methods]
+        },
+        #{
+            id => json_rpc_listener,
+            start => {json_rpc_listener, start_link, []},
+            restart => permanent,
+            shutdown => ListenerShutdown,
+            type => worker,
+            modules => [json_rpc_listener]
         }
     ],
     {ok, {SupFlags, Children}}.

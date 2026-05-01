@@ -91,8 +91,7 @@ read_full_body(Req0, MaxBody, Acc) ->
 handle_body(Body, Req0, State) ->
     case decode_json(Body) of
         {ok, Parsed} ->
-            Methods = json_rpc_server:get_methods(),
-            Reply = json_rpc_dispatcher:dispatch(Parsed, Methods),
+            Reply = json_rpc_dispatcher:dispatch(Parsed),
             send_reply(Reply, Req0, State);
         {error, parse_error} ->
             ErrBody = jiffy:encode(
