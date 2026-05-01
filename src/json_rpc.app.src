@@ -15,7 +15,16 @@
     {vsn, "0.2.0"},
     {registered, [json_rpc_sup, json_rpc_server]},
     {applications, [kernel, stdlib, cowboy, jiffy]},
-    {env, []},
+    {env, [
+        {port, 8080},
+        {max_body_bytes, 1048576},
+        {max_connections, 1024},
+        {num_acceptors, 100},
+        {idle_timeout_ms, 60000},
+        {request_timeout_ms, 10000},
+        {drain_timeout_ms, 5000},
+        {max_methods, 1024}
+    ]},
     {mod, {json_rpc_app, []}},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/omarjatoi/json-rpc"}]}
