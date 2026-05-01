@@ -34,7 +34,12 @@
     test_invalid_batch/1,
     test_rpc_call_batch/1,
     test_notification_batch/1,
-    test_authentication/1
+    test_authentication/1,
+    test_explicit_null_id_is_call/1,
+    test_all_notification_batch_no_response/1,
+    test_reserved_method_name/1,
+    test_invalid_params_type/1,
+    test_handler_throws_jsonrpc_error/1
 ]).
 
 -define(PORT, 8080).
@@ -54,7 +59,12 @@ all() ->
         test_invalid_batch,
         test_rpc_call_batch,
         test_notification_batch,
-        test_authentication
+        test_authentication,
+        test_explicit_null_id_is_call,
+        test_all_notification_batch_no_response,
+        test_reserved_method_name,
+        test_invalid_params_type,
+        test_handler_throws_jsonrpc_error
     ].
 
 init_per_suite(Config) ->
@@ -99,7 +109,10 @@ register_methods(Pid) ->
         {<<"get_data">>, fun(_) -> [<<"hello">>, 5] end},
         {<<"update">>, fun(_) -> ok end},
         {<<"notify_sum">>, fun(_) -> ok end},
-        {<<"notify_hello">>, fun(_) -> ok end}
+        {<<"notify_hello">>, fun(_) -> ok end},
+        {<<"throw_error">>, fun(_) ->
+            throw({jsonrpc_error, -32602, <<"bad arg">>, #{<<"detail">> => <<"oops">>}})
+        end}
     ],
     lists:foreach(
         fun({Name, Fun}) ->
@@ -233,4 +246,68 @@ test_authentication(Config) ->
     ?assertEqual(
         {ok, 19, 2},
         json_rpc_client:call(AuthClient, <<"subtract">>, [42, 23], 2)
+    ),
+
+    %% Reset auth so subsequent tests in the suite are unaffected.
+    json_rpc_server:set_auth(fun(_) -> ok end).
+
+%% Per spec, an explicit "id": null is a (discouraged but valid) call;
+%% the server must respond with id: null, NOT silently drop it as if it
+%% were a notification.
+test_explicit_null_id_is_call(Config) ->
+    Client = ?config(client, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
+    ?assertEqual(
+        {ok, 19, null},
+        json_rpc_client:raw_request(Client, Payload)
+    ).
+
+%% A batch consisting entirely of notifications must produce no response
+%% on the wire. Use a fresh socket and a short recv timeout to assert
+%% that nothing comes back.
+test_all_notification_batch_no_response(_Config) ->
+    {ok, Socket} = gen_tcp:connect(?HOST, ?PORT, [binary, {packet, 0}, {active, false}]),
+    Payload =
+        <<"[",
+          "{\"jsonrpc\": \"2.0\", \"method\": \"notify_sum\", \"params\": [1,2,4]},",
+          "{\"jsonrpc\": \"2.0\", \"method\": \"notify_hello\", \"params\": [7]}",
+          "]">>,
+    ok = gen_tcp:send(Socket, Payload),
+    ?assertEqual({error, timeout}, gen_tcp:recv(Socket, 0, 200)),
+    gen_tcp:close(Socket).
+
+%% Method names beginning with "rpc." are reserved for rpc-internal use
+%% and must be rejected with -32601 Method not found when invoked from a
+%% client.
+test_reserved_method_name(Config) ->
+    Client = ?config(client, Config),
+    ?assertEqual(
+        {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"r1">>},
+        json_rpc_client:call(Client, <<"rpc.foo">>, [], <<"r1">>)
+    ).
+
+%% "params", when present, must be an array or object. Anything else
+%% (here, a number) yields -32602 Invalid params.
+test_invalid_params_type(Config) ->
+    Client = ?config(client, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": 42, \"id\": \"p1\"}">>,
+    ?assertEqual(
+        {error, #{<<"code">> => -32602, <<"message">> => <<"Invalid params">>}, <<"p1">>},
+        json_rpc_client:raw_request(Client, Payload)
+    ).
+
+%% Handlers may surface application-level errors by throwing the
+%% structured tuple {jsonrpc_error, Code, Msg[, Data]}; the resulting
+%% error object must reach the client verbatim, including the Data field.
+test_handler_throws_jsonrpc_error(Config) ->
+    Client = ?config(client, Config),
+    ?assertEqual(
+        {error,
+            #{
+                <<"code">> => -32602,
+                <<"message">> => <<"bad arg">>,
+                <<"data">> => #{<<"detail">> => <<"oops">>}
+            },
+            <<"e1">>},
+        json_rpc_client:call(Client, <<"throw_error">>, [], <<"e1">>)
     ).
