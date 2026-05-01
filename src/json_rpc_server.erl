@@ -14,6 +14,8 @@
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([start_link/1, stop/0, register_method/2, set_auth/1]).
 -export([
     init/1,
@@ -50,7 +52,9 @@ init([Port]) when is_integer(Port), Port > 0, Port < 65536 ->
             {ok, #state{listener = ListenSocket}};
         {error, Reason} ->
             {stop, Reason}
-    end.
+    end;
+init([Port]) ->
+    {stop, {invalid_port, Port}}.
 
 handle_call({register_method, Name, Fun}, _From, State) ->
     NewMethods = maps:put(Name, Fun, State#state.methods),
@@ -67,8 +71,9 @@ handle_info(accept, #state{listener = ListenSocket} = State) ->
     % Add a 0 timeout
     case gen_tcp:accept(ListenSocket, 0) of
         {ok, Socket} ->
-            Pid = spawn_link(fun() -> handle_client(Socket, State) end),
-            gen_tcp:controlling_process(Socket, Pid),
+            Pid = spawn_link(fun() -> wait_and_handle(State) end),
+            ok = gen_tcp:controlling_process(Socket, Pid),
+            Pid ! {start, Socket},
             self() ! accept,
             {noreply, State};
         {error, timeout} ->
@@ -78,13 +83,13 @@ handle_info(accept, #state{listener = ListenSocket} = State) ->
         {error, closed} ->
             {stop, normal, State};
         {error, Reason} ->
-            logger:error("Error in accept: ~p~n", [Reason]),
+            ?LOG_ERROR("Error in accept: ~p", [Reason]),
             {stop, Reason, State}
     end;
 handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
-    logger:error("Client ~p exited: ~p", [Pid, Reason]),
+    ?LOG_ERROR("Client ~p exited: ~p", [Pid, Reason]),
     {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -97,6 +102,16 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% Internal functions
+
+wait_and_handle(State) ->
+    receive
+        {start, Socket} ->
+            handle_client(Socket, State)
+    after 5000 ->
+        ?LOG_ERROR("Client worker timed out waiting for socket transfer"),
+        ok
+    end.
+
 handle_client(Socket, State) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Data} ->
@@ -105,7 +120,7 @@ handle_client(Socket, State) ->
         {error, closed} ->
             ok;
         {error, Reason} ->
-            logger:error("Client socket error: ~p", [Reason])
+            ?LOG_ERROR("Client socket error: ~p", [Reason])
     end.
 
 handle_request(Socket, Data, State) ->
@@ -122,7 +137,8 @@ handle_request(Socket, Data, State) ->
                 send_response(Socket, ErrorResponse)
         end
     catch
-        error:badarg ->
+        Class:Reason:Stacktrace ->
+            ?LOG_ERROR("Parse error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             ParseErrorResponse = create_error_response(null, -32700, <<"Parse error">>),
             send_response(Socket, ParseErrorResponse)
     end.
@@ -130,7 +146,13 @@ handle_request(Socket, Data, State) ->
 send_response(_Socket, no_response) ->
     ok;
 send_response(Socket, Response) ->
-    gen_tcp:send(Socket, jiffy:encode(Response)).
+    case gen_tcp:send(Socket, jiffy:encode(Response)) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            ?LOG_ERROR("Failed to send response: ~p", [Reason]),
+            ok
+    end.
 
 authenticate(_Request, #state{auth_fun = undefined}) ->
     ok;
@@ -141,7 +163,9 @@ authenticate(Request, #state{auth_fun = AuthFun}) ->
             _ -> error
         end
     catch
-        _:_ -> error
+        Class:Reason:Stacktrace ->
+            ?LOG_ERROR("Auth function failed: ~p:~p~n~p", [Class, Reason, Stacktrace]),
+            error
     end.
 
 process_request([], _State) ->
