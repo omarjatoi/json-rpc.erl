@@ -31,6 +31,7 @@
     test_http_reserved_method_name/1,
     test_http_invalid_params_type/1,
     test_http_handler_throws_jsonrpc_error/1,
+    test_http_handler_throws_reserved_error/1,
     test_http_explicit_null_id_is_call/1,
     test_http_invalid_id_boolean/1,
     test_http_invalid_id_array/1,
@@ -86,6 +87,7 @@ all() ->
         test_http_reserved_method_name,
         test_http_invalid_params_type,
         test_http_handler_throws_jsonrpc_error,
+        test_http_handler_throws_reserved_error,
         test_http_explicit_null_id_is_call,
         test_http_invalid_id_boolean,
         test_http_invalid_id_array,
@@ -168,6 +170,7 @@ register_methods() ->
         {<<"notify_sum">>, {json_rpc_test_methods, notify_sum}},
         {<<"notify_hello">>, {json_rpc_test_methods, notify_hello}},
         {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
+        {<<"throw_reserved_error">>, {json_rpc_test_methods, throw_reserved_error}},
         {<<"slow">>, {json_rpc_test_methods, slow}}
     ],
     lists:foreach(
@@ -270,11 +273,13 @@ test_http_invalid_params_type(Config) ->
 
 test_http_handler_throws_jsonrpc_error(Config) ->
     Conn = ?config(conn, Config),
+    %% throw_error/1 uses an application-defined code (not in the reserved
+    %% range -32768..-32000) so the dispatcher passes it through verbatim.
     ?assertEqual(
         #{
             <<"jsonrpc">> => <<"2.0">>,
             <<"error">> => #{
-                <<"code">> => -32602,
+                <<"code">> => -1,
                 <<"message">> => <<"bad arg">>,
                 <<"data">> => #{<<"detail">> => <<"oops">>}
             },
@@ -282,6 +287,23 @@ test_http_handler_throws_jsonrpc_error(Config) ->
         },
         rpc_call(Conn, #{
             jsonrpc => <<"2.0">>, method => <<"throw_error">>, params => [], id => <<"e1">>
+        })
+    ).
+
+test_http_handler_throws_reserved_error(Config) ->
+    Conn = ?config(conn, Config),
+    %% A handler throwing a code in the JSON-RPC reserved range (-32768..-32000)
+    %% must not be able to impersonate a framework error. The dispatcher
+    %% substitutes -32603 Internal error.
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32603, <<"message">> => <<"Internal error">>},
+            <<"id">> => <<"r2">>
+        },
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"throw_reserved_error">>,
+            params => [], id => <<"r2">>
         })
     ).
 
@@ -507,7 +529,7 @@ test_rpc_discover(Config) ->
     Required = [
         <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
         <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
-        <<"slow">>, <<"rpc.discover">>
+        <<"throw_reserved_error">>, <<"slow">>, <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,

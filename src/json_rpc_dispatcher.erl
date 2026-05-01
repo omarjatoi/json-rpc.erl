@@ -106,13 +106,26 @@ invoke(Thunk, Id) ->
         end
     catch
         throw:{jsonrpc_error, Code, Msg} when is_integer(Code), is_binary(Msg) ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg));
+            handle_thrown(Id, Code, Msg, no_data);
         throw:{jsonrpc_error, Code, Msg, Data} when is_integer(Code), is_binary(Msg) ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg, Data));
+            handle_thrown(Id, Code, Msg, {data, Data});
         Class:Reason:Stacktrace ->
             ?LOG_ERROR("Handler error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>))
     end.
+
+%% A handler must use the application-defined error space. Reject any code in
+%% the JSON-RPC reserved range -32768..-32000 — substituting -32603 Internal
+%% error so the framework's own codes can't be impersonated by a handler.
+handle_thrown(Id, Code, _Msg, _Data) when Code >= -32768, Code =< -32000 ->
+    ?LOG_WARNING(
+        "Handler threw reserved JSON-RPC error code ~p; substituting -32603", [Code]
+    ),
+    response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>));
+handle_thrown(Id, Code, Msg, no_data) ->
+    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg));
+handle_thrown(Id, Code, Msg, {data, Data}) ->
+    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg, Data)).
 
 response_or_drop(notification, _Response) -> no_response;
 response_or_drop(_Id, Response) -> Response.
