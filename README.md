@@ -49,27 +49,36 @@ json_rpc_client:close(AuthenticatedClient).
 
 ## Development
 
-`erlang` and `rebar3` are the two required development dependencies; `erlfmt` is useful but not mandatory. There is a [`flake.nix`](./flake.nix) with a development shell with both dependencies present, you can run the shell with `nix develop` (you may want to pass `--command /bin/zsh` on macOS).
+`erlang` and `rebar3` are the two required development dependencies; `erlfmt` is useful but not mandatory. There is a [`flake.nix`](./flake.nix) with a development shell with both dependencies present, you can run the shell with `nix develop` (you may want to pass `--command /bin/zsh` on macOS), or via `make sh`.
 
-For convenience, there is a [`Makefile`](./Makefile) with some tasks defined in it, run `make`:
+There is a [`Makefile`](./Makefile) with the common tasks; run `make` to see
+them:
 
 ```
 Run tasks for json-rpc
 
-  build     compile the json-rpc application
-  deps      get dependencies for the project
-  format    run the erlfmt code formatter
-  test      run all eunit tests
-  sh        launch a nix shell with zsh (erlang, rebar3, erlfmt)
+  build      compile the json-rpc application
+  clean      run rebar3 clean and delete the build dir
+  deps       get dependencies for the project
+  format     run the erlfmt formatter
+  lint       run linter (rebar3_lint)
+  xref       run rebar3 xref
+  dialyzer   run rebar3 dialyzer
+  check      run format, lint, xref, dialyzer (fail fast)
+  test       run all common_test suites
+  ct         run rebar3 ct
+  sh         launch a nix shell with zsh (erlang, rebar3)
 ```
 
-Alternative, you can use `rebar3` directly.
+Alternatively, you can use `rebar3` directly.
 
 |Command|Description|
 |-|-|
 |`rebar3 update`|Download any dependencies|
 |`rebar3 compile`|Build the project|
-|`rebar3 eunit`|Run all tests|
+|`rebar3 ct`|Run all common_test suites|
+|`rebar3 xref`|Run cross-reference checks|
+|`rebar3 dialyzer`|Run the static type analyzer|
 |`rebar3 format`|Run the [Erlang formatter](https://github.com/WhatsApp/erlfmt)|
 
 ## License
