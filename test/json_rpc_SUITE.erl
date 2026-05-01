@@ -72,7 +72,8 @@
     test_rpc_discover/1,
     test_register_rpc_reserved/1,
     test_register_invalid_handler/1,
-    test_register_full/1
+    test_register_full/1,
+    test_methods_table_is_protected/1
 ]).
 
 %% Application lifecycle test cases.
@@ -135,6 +136,7 @@ all() ->
         test_register_rpc_reserved,
         test_register_invalid_handler,
         test_register_full,
+        test_methods_table_is_protected,
         test_app_drain,
         %% Lifecycle tests must run last since they stop the application.
         test_app_lifecycle
@@ -235,6 +237,7 @@ needs_conn(test_app_lifecycle) -> false;
 needs_conn(test_register_rpc_reserved) -> false;
 needs_conn(test_register_invalid_handler) -> false;
 needs_conn(test_register_full) -> false;
+needs_conn(test_methods_table_is_protected) -> false;
 needs_conn(test_ws_drain_on_shutdown) -> false;
 needs_conn(_) -> true.
 
@@ -1080,6 +1083,30 @@ test_register_full(_Config) ->
             undefined -> application:unset_env(json_rpc, max_methods)
         end
     end.
+
+%% A foreign process must not be able to bypass the gen_server's
+%% validation by writing to the ETS table directly. The table is created
+%% as `protected', so only the owner (the json_rpc_methods gen_server)
+%% may write; foreign writes raise `error:badarg'.
+test_methods_table_is_protected(_Config) ->
+    Self = self(),
+    Pid = spawn(fun() ->
+        Result =
+            try ets:insert(json_rpc_methods, {<<"rogue">>, {mfa, ?MODULE, dummy_handler}}) of
+                Other -> {ok, Other}
+            catch
+                Class:Reason -> {Class, Reason}
+            end,
+        Self ! {result, Result}
+    end),
+    receive
+        {result, R} ->
+            ?assertMatch({error, badarg}, R)
+    after 5000 ->
+        erlang:error({foreign_writer_did_not_finish, Pid})
+    end,
+    %% And the rogue entry must not be present in the registry.
+    ?assertEqual(not_found, json_rpc_methods:lookup(<<"rogue">>)).
 
 %%% Application lifecycle test cases
 

@@ -96,7 +96,7 @@ discover(_Params) ->
 
 -spec init([]) -> {ok, map()}.
 init([]) ->
-    _ = ets:new(?TABLE, [set, named_table, public, {read_concurrency, true}]),
+    _ = ets:new(?TABLE, [set, named_table, protected, {read_concurrency, true}]),
     %% Insert the built-in discovery method directly; it bypasses the
     %% reserved-namespace check by design.
     true = ets:insert_new(?TABLE, {?BUILTIN_DISCOVER, {mfa, ?MODULE, discover}}),
