@@ -60,7 +60,10 @@
     test_ws_handler_exit_isolation/1,
     test_ws_subprotocol_offered/1,
     test_ws_oversize_frame/1,
-    test_ws_binary_frame/1
+    test_ws_binary_frame/1,
+    test_ws_push/1,
+    test_ws_publish/1,
+    test_ws_subscriber_cleanup_on_close/1
 ]).
 
 %% Registry test cases.
@@ -123,6 +126,9 @@ all() ->
         test_ws_subprotocol_offered,
         test_ws_oversize_frame,
         test_ws_binary_frame,
+        test_ws_push,
+        test_ws_publish,
+        test_ws_subscriber_cleanup_on_close,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -826,6 +832,130 @@ test_ws_binary_frame(Config) ->
             erlang:error(no_close_received)
         end,
     ?assertMatch({close, 1003}, Result).
+
+%% `json_rpc_ws:push/3' delivers a single Notification to one WS handler
+%% pid. We open one WS connection, look up its handler pid via
+%% ranch:procs/2, push, and assert the client receives the text frame.
+test_ws_push(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    HandlerPid = ws_handler_pid(),
+    ok = json_rpc_ws:push(HandlerPid, <<"event">>, #{<<"k">> => 1}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    Decoded = jiffy:decode(RespBin, [return_maps]),
+    %% A Notification has no `id' member.
+    ?assertNot(maps:is_key(<<"id">>, Decoded)),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"method">> => <<"event">>,
+            <<"params">> => #{<<"k">> => 1}
+        },
+        Decoded
+    ).
+
+%% `json_rpc_ws:publish/3' fans a Notification out to every subscriber of
+%% `Topic'. Open two WS connections, subscribe both, publish, verify both
+%% receive the frame. Then unsubscribe one, publish again, verify only the
+%% remaining subscriber gets it.
+test_ws_publish(Config) ->
+    Conn1 = ?config(conn, Config),
+    Stream1 = ws_upgrade(Conn1),
+    {ok, Conn2} = gun:open(?HOST, ?PORT, #{
+        transport => tcp, protocols => [http], retry => 0
+    }),
+    {ok, http} = gun:await_up(Conn2, 5000),
+    try
+        Stream2 = ws_upgrade_on(Conn2),
+        [PidA, PidB] = ws_handler_pids(2),
+        ok = json_rpc_ws:subscribe(PidA, news),
+        ok = json_rpc_ws:subscribe(PidB, news),
+        ok = json_rpc_ws:publish(news, <<"hi">>, [1, 2]),
+        Frame1 = await_text(Conn1, Stream1),
+        Frame2 = await_text(Conn2, Stream2),
+        Expected = #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"method">> => <<"hi">>,
+            <<"params">> => [1, 2]
+        },
+        ?assertEqual(Expected, jiffy:decode(Frame1, [return_maps])),
+        ?assertEqual(Expected, jiffy:decode(Frame2, [return_maps])),
+        ok = json_rpc_ws:unsubscribe(PidB, news),
+        ok = json_rpc_ws:publish(news, <<"hi2">>, [3]),
+        Frame1b = await_text(Conn1, Stream1),
+        ?assertEqual(<<"hi2">>, maps:get(<<"method">>, jiffy:decode(Frame1b, [return_maps]))),
+        ?assertEqual({error, timeout}, gun:await(Conn2, Stream2, 200))
+    after
+        gun:close(Conn2)
+    end.
+
+%% `pg' monitors its members, so when a WS handler process exits its
+%% subscriptions disappear automatically. Open a connection, subscribe to a
+%% topic, close the connection, and assert the topic's member list is
+%% empty.
+test_ws_subscriber_cleanup_on_close(Config) ->
+    Conn = ?config(conn, Config),
+    _StreamRef = ws_upgrade(Conn),
+    HandlerPid = ws_handler_pid(),
+    ok = json_rpc_ws:subscribe(HandlerPid, cleanup_topic),
+    ?assertEqual(
+        [HandlerPid],
+        pg:get_members(json_rpc, {json_rpc_topic, cleanup_topic})
+    ),
+    MRef = erlang:monitor(process, HandlerPid),
+    gun:close(Conn),
+    receive
+        {'DOWN', MRef, process, HandlerPid, _} -> ok
+    after 5000 ->
+        erlang:error(handler_did_not_exit)
+    end,
+    %% Members are cleaned up asynchronously by the pg monitor; poll briefly.
+    ok = wait_for_pg_cleanup({json_rpc_topic, cleanup_topic}, 2000).
+
+ws_upgrade_on(Conn) ->
+    StreamRef = gun:ws_upgrade(Conn, "/ws"),
+    receive
+        {gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Hs} -> StreamRef
+    after 5000 ->
+        erlang:error(ws_upgrade_timeout)
+    end.
+
+await_text(Conn, StreamRef) ->
+    case gun:await(Conn, StreamRef, 5000) of
+        {ws, {text, Bin}} -> Bin;
+        Other -> erlang:error({unexpected, Other})
+    end.
+
+ws_handler_pid() ->
+    [Pid] = ws_handler_pids(1),
+    Pid.
+
+%% Wait briefly until ranch reports the expected number of connection
+%% processes. Returns the pid list, sorted to make positional access stable
+%% across runs.
+ws_handler_pids(N) ->
+    ws_handler_pids(N, 50).
+
+ws_handler_pids(N, 0) ->
+    erlang:error({no_ws_handler_pids, N, ranch:procs(json_rpc_listener, connections)});
+ws_handler_pids(N, Tries) ->
+    Pids = ranch:procs(json_rpc_listener, connections),
+    case length(Pids) =:= N of
+        true -> lists:sort(Pids);
+        false ->
+            timer:sleep(20),
+            ws_handler_pids(N, Tries - 1)
+    end.
+
+wait_for_pg_cleanup(_Group, Budget) when Budget =< 0 ->
+    erlang:error(pg_cleanup_timeout);
+wait_for_pg_cleanup(Group, Budget) ->
+    case pg:get_members(json_rpc, Group) of
+        [] -> ok;
+        _ ->
+            timer:sleep(50),
+            wait_for_pg_cleanup(Group, Budget - 50)
+    end.
 
 %%% WebSocket helpers
 

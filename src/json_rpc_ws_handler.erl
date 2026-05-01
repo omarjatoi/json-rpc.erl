@@ -76,6 +76,11 @@ websocket_handle({binary, _Data}, State) ->
 websocket_handle(_Frame, State) ->
     {[], State}.
 
+websocket_info({json_rpc_push, Frame}, State) ->
+    %% Server-push delivery from `json_rpc_ws:push/3' or `publish/3'. The
+    %% frame is already an encoded JSON-RPC Notification; emit it as a
+    %% text frame.
+    {[{text, Frame}], State};
 websocket_info(_Info, State) ->
     {[], State}.
 
