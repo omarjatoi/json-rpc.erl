@@ -10,18 +10,16 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
--module(json_rpc_app).
+-module(json_rpc_drain_handler).
 
--behaviour(application).
+%% Cowboy handler installed when the listener is draining. Replies 503 to
+%% any new request so the listener stops accepting work while in-flight
+%% requests are allowed to finish.
 
--export([start/2, stop/1]).
+-behaviour(cowboy_handler).
 
-start(_StartType, _StartArgs) ->
-    %% Validate every config key up front so a misconfigured environment
-    %% fails the application start cleanly instead of crashing the listener
-    %% later with a less actionable error.
-    ok = json_rpc_config:validate_all(),
-    json_rpc_sup:start_link().
+-export([init/2]).
 
-stop(_State) ->
-    ok.
+init(Req0, State) ->
+    Req = cowboy_req:reply(503, #{<<"connection">> => <<"close">>}, <<>>, Req0),
+    {ok, Req, State}.

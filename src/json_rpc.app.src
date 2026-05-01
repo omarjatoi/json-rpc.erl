@@ -12,8 +12,8 @@
 
 {application, json_rpc, [
     {description, "JSON-RPC 2.0 server over HTTP and WebSocket in Erlang"},
-    {vsn, "0.2.0"},
-    {registered, [json_rpc_sup, json_rpc_server]},
+    {vsn, "0.3.0"},
+    {registered, [json_rpc_sup, json_rpc_methods, json_rpc_listener]},
     {applications, [kernel, stdlib, cowboy, jiffy]},
     {env, [
         {port, 8080},
