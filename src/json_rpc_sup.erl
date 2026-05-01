@@ -20,9 +20,13 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    %% rest_for_one: if the methods registry crashes and restarts empty, we
-    %% also restart the listener so it doesn't keep serving -32601 against a
-    %% half-populated registry mid-flight.
+    %% rest_for_one ensures the listener is restarted alongside the registry
+    %% to avoid serving requests against a half-populated table during
+    %% restart. NOTE: when the registry crashes, all registered methods are
+    %% LOST. The embedding application is responsible for re-registering its
+    %% methods after a registry restart (e.g. by trapping the
+    %% SIGTERM/restart signal in its own startup code, or by seeding the
+    %% registry from app config in its own supervisor's init).
     SupFlags = #{strategy => rest_for_one, intensity => 5, period => 10},
     DrainMs = json_rpc_config:get(drain_timeout_ms),
     %% The listener's terminate/2 may take up to drain_timeout_ms; give the
