@@ -180,13 +180,13 @@ end_per_testcase(_TestCase, Config) ->
         undefined -> ok;
         ConnPid -> gun:close(ConnPid)
     end,
-    case ?config(saved_request_timeout_ms, Config) of
+    case ?config(saved_handler_timeout_ms, Config) of
         undefined ->
             ok;
         {ok, Prev} ->
-            application:set_env(json_rpc, request_timeout_ms, Prev);
+            application:set_env(json_rpc, handler_timeout_ms, Prev);
         unset ->
-            application:unset_env(json_rpc, request_timeout_ms)
+            application:unset_env(json_rpc, handler_timeout_ms)
     end,
     case ?config(saved_ws_max_frame_bytes, Config) of
         undefined ->
@@ -198,7 +198,7 @@ end_per_testcase(_TestCase, Config) ->
     end,
     ok.
 
-%% The handler-timeout cases need a small request_timeout_ms so the test
+%% The handler-timeout cases need a small handler_timeout_ms so the test
 %% can sleep past it without slowing the suite. Save and restore the
 %% original value so test_app_drain (which uses the slow handler at 800ms)
 %% and other tests aren't affected.
@@ -207,12 +207,12 @@ maybe_lower_timeout(TestCase, Config) when
     TestCase =:= test_ws_handler_timeout
 ->
     Saved =
-        case application:get_env(json_rpc, request_timeout_ms) of
+        case application:get_env(json_rpc, handler_timeout_ms) of
             {ok, V} -> {ok, V};
             undefined -> unset
         end,
-    application:set_env(json_rpc, request_timeout_ms, 200),
-    [{saved_request_timeout_ms, Saved} | Config];
+    application:set_env(json_rpc, handler_timeout_ms, 200),
+    [{saved_handler_timeout_ms, Saved} | Config];
 maybe_lower_timeout(_TestCase, Config) ->
     Config.
 
@@ -566,7 +566,7 @@ test_http_unsupported_media_type(Config) ->
     {Status, _Hs, _Body} = raw_post(Conn, Payload, Headers),
     ?assertEqual(415, Status).
 
-%% A handler that sleeps past request_timeout_ms (lowered to 200ms in
+%% A handler that sleeps past handler_timeout_ms (lowered to 200ms in
 %% init_per_testcase) must produce -32603 with data.reason = timeout, and
 %% the HTTP status must remain 200.
 test_http_handler_timeout(Config) ->

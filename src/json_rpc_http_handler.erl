@@ -94,7 +94,7 @@ read_full_body(Req0, MaxBody, Acc) ->
 handle_body(Body, Req0, State) ->
     case decode_json(Body) of
         {ok, Parsed} ->
-            Timeout = json_rpc_config:get(request_timeout_ms),
+            Timeout = json_rpc_config:get(handler_timeout_ms),
             case json_rpc_worker:run(Parsed, Timeout) of
                 {ok, Reply} ->
                     send_reply(Reply, Req0, State);

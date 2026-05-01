@@ -22,6 +22,7 @@
         {num_acceptors, 100},
         {idle_timeout_ms, 60000},
         {request_timeout_ms, 10000},
+        {handler_timeout_ms, 10000},
         {drain_timeout_ms, 5000},
         {max_methods, 1024},
         {ws_max_frame_bytes, 1048576},

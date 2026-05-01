@@ -26,6 +26,7 @@
     | num_acceptors
     | idle_timeout_ms
     | request_timeout_ms
+    | handler_timeout_ms
     | drain_timeout_ms
     | max_methods
     | ws_max_frame_bytes
@@ -65,6 +66,7 @@ validate_all() ->
         num_acceptors,
         idle_timeout_ms,
         request_timeout_ms,
+        handler_timeout_ms,
         drain_timeout_ms,
         max_methods,
         ws_max_frame_bytes,
@@ -99,6 +101,10 @@ validate(request_timeout_ms, V) when is_integer(V), V > 0 ->
     V;
 validate(request_timeout_ms, V) ->
     bad(request_timeout_ms, V, <<"must be a positive integer">>);
+validate(handler_timeout_ms, V) when is_integer(V), V > 0 ->
+    V;
+validate(handler_timeout_ms, V) ->
+    bad(handler_timeout_ms, V, <<"must be a positive integer">>);
 validate(drain_timeout_ms, V) when is_integer(V), V >= 0 ->
     V;
 validate(drain_timeout_ms, V) ->

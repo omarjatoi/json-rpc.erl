@@ -41,7 +41,7 @@ websocket_init(_State) ->
 websocket_handle({text, Frame}, State) ->
     case decode_json(Frame) of
         {ok, Parsed} ->
-            Timeout = json_rpc_config:get(request_timeout_ms),
+            Timeout = json_rpc_config:get(handler_timeout_ms),
             case json_rpc_worker:run(Parsed, Timeout) of
                 {ok, no_response} ->
                     {[], State};
