@@ -13,9 +13,6 @@
       in
       {
         devShell = pkgs.mkShell {
-          shellHook = ''
-            echo "Entering development shell... type `exit` to quit."
-          '';
           buildInputs = with pkgs; [
             erlfmt
             erlang
