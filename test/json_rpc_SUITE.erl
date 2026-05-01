@@ -37,6 +37,7 @@
     test_http_invalid_id_array/1,
     test_http_invalid_id_object/1,
     test_http_batch_mixed/1,
+    test_http_batch_element_id_preserved_on_envelope_error/1,
     test_http_all_notification_batch/1,
     test_http_empty_batch/1,
     test_http_malformed_json/1,
@@ -44,7 +45,8 @@
     test_http_method_not_allowed/1,
     test_http_unsupported_media_type/1,
     test_http_handler_timeout/1,
-    test_http_handler_crash_isolation/1
+    test_http_handler_crash_isolation/1,
+    test_http_handler_exit_isolation/1
 ]).
 
 %% WebSocket test cases.
@@ -54,7 +56,15 @@
     test_ws_batch/1,
     test_ws_malformed_json/1,
     test_ws_handler_timeout/1,
-    test_ws_handler_crash_isolation/1
+    test_ws_handler_crash_isolation/1,
+    test_ws_handler_exit_isolation/1,
+    test_ws_subprotocol_offered/1,
+    test_ws_oversize_frame/1,
+    test_ws_binary_frame/1,
+    test_ws_push/1,
+    test_ws_publish/1,
+    test_ws_subscriber_cleanup_on_close/1,
+    test_ws_drain_on_shutdown/1
 ]).
 
 %% Registry test cases.
@@ -97,6 +107,7 @@ all() ->
         test_http_invalid_id_array,
         test_http_invalid_id_object,
         test_http_batch_mixed,
+        test_http_batch_element_id_preserved_on_envelope_error,
         test_http_all_notification_batch,
         test_http_empty_batch,
         test_http_malformed_json,
@@ -105,12 +116,21 @@ all() ->
         test_http_unsupported_media_type,
         test_http_handler_timeout,
         test_http_handler_crash_isolation,
+        test_http_handler_exit_isolation,
         test_ws_call,
         test_ws_notification,
         test_ws_batch,
         test_ws_malformed_json,
         test_ws_handler_timeout,
         test_ws_handler_crash_isolation,
+        test_ws_handler_exit_isolation,
+        test_ws_subprotocol_offered,
+        test_ws_oversize_frame,
+        test_ws_binary_frame,
+        test_ws_push,
+        test_ws_publish,
+        test_ws_subscriber_cleanup_on_close,
+        test_ws_drain_on_shutdown,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -139,9 +159,10 @@ end_per_suite(_Config) ->
 
 init_per_testcase(TestCase, Config0) ->
     Config1 = maybe_lower_timeout(TestCase, Config0),
+    Config2 = maybe_lower_ws_frame(TestCase, Config1),
     case needs_conn(TestCase) of
         false ->
-            Config1;
+            Config2;
         true ->
             {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
                 transport => tcp,
@@ -149,7 +170,7 @@ init_per_testcase(TestCase, Config0) ->
                 retry => 0
             }),
             {ok, http} = gun:await_up(ConnPid, 5000),
-            [{conn, ConnPid} | Config1]
+            [{conn, ConnPid} | Config2]
     end.
 
 end_per_testcase(_TestCase, Config) ->
@@ -164,6 +185,14 @@ end_per_testcase(_TestCase, Config) ->
             application:set_env(json_rpc, request_timeout_ms, Prev);
         unset ->
             application:unset_env(json_rpc, request_timeout_ms)
+    end,
+    case ?config(saved_ws_max_frame_bytes, Config) of
+        undefined ->
+            ok;
+        {ok, PrevWs} ->
+            application:set_env(json_rpc, ws_max_frame_bytes, PrevWs);
+        unset ->
+            application:unset_env(json_rpc, ws_max_frame_bytes)
     end,
     ok.
 
@@ -185,6 +214,20 @@ maybe_lower_timeout(TestCase, Config) when
 maybe_lower_timeout(_TestCase, Config) ->
     Config.
 
+%% The oversize-WS-frame test needs a tiny ws_max_frame_bytes so we don't
+%% have to ship a multi-MB frame through CT. Saved/restored per testcase
+%% so other WS tests aren't affected.
+maybe_lower_ws_frame(test_ws_oversize_frame, Config) ->
+    Saved =
+        case application:get_env(json_rpc, ws_max_frame_bytes) of
+            {ok, V} -> {ok, V};
+            undefined -> unset
+        end,
+    application:set_env(json_rpc, ws_max_frame_bytes, 4096),
+    [{saved_ws_max_frame_bytes, Saved} | Config];
+maybe_lower_ws_frame(_TestCase, Config) ->
+    Config.
+
 %% Test cases that don't open a gun connection in init_per_testcase. The
 %% lifecycle test owns the application start/stop itself; the registry
 %% tests don't talk over the wire.
@@ -192,6 +235,7 @@ needs_conn(test_app_lifecycle) -> false;
 needs_conn(test_register_rpc_reserved) -> false;
 needs_conn(test_register_invalid_handler) -> false;
 needs_conn(test_register_full) -> false;
+needs_conn(test_ws_drain_on_shutdown) -> false;
 needs_conn(_) -> true.
 
 %%% Method registration
@@ -207,7 +251,8 @@ register_methods() ->
         {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
         {<<"throw_reserved_error">>, {json_rpc_test_methods, throw_reserved_error}},
         {<<"slow">>, {json_rpc_test_methods, slow}},
-        {<<"crash">>, {json_rpc_test_methods, crash}}
+        {<<"crash">>, {json_rpc_test_methods, crash}},
+        {<<"crash_exit">>, {json_rpc_test_methods, crash_exit}}
     ],
     lists:foreach(
         fun({Name, Handler}) -> ok = json_rpc_methods:register_method(Name, Handler) end,
@@ -413,6 +458,46 @@ test_http_batch_mixed(Config) ->
     ],
     ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
 
+%% Per-batch-element envelope errors must preserve the original `id' when one
+%% was present and well-typed. The dispatcher used to require a fully valid
+%% envelope before extracting the id, so a batch element with a valid id but
+%% (e.g.) wrong jsonrpc version came back as id: null and clients couldn't
+%% correlate the error to its request.
+test_http_batch_element_id_preserved_on_envelope_error(Config) ->
+    Conn = ?config(conn, Config),
+    Batch = [
+        %% Wrong jsonrpc version, but id is present and valid -> echo id.
+        #{jsonrpc => <<"1.0">>, method => <<"subtract">>, params => [1, 2], id => <<"v">>},
+        %% Missing method, valid id -> echo id.
+        #{jsonrpc => <<"2.0">>, id => <<"m">>},
+        %% Completely garbage element (not an object) -> id: null (cannot
+        %% extract one).
+        <<"junk">>,
+        %% Sanity: a normal call still works alongside the broken elements.
+        #{jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => <<"ok">>}
+    ],
+    Decoded = rpc_call(Conn, Batch),
+    ?assert(is_list(Decoded)),
+    Expected = [
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => <<"v">>
+        },
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => <<"m">>
+        },
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => <<"ok">>}
+    ],
+    ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
+
 test_http_all_notification_batch(Config) ->
     Conn = ?config(conn, Config),
     Batch = [
@@ -525,6 +610,30 @@ test_http_handler_crash_isolation(Config) ->
         })
     ).
 
+%% A handler that calls `exit/1' is not caught by the dispatcher's narrowed
+%% try/catch — the worker process dies, json_rpc_worker returns
+%% `{error, {crash, exit, _}}', and the HTTP handler must turn that into a
+%% -32603 envelope while keeping the connection alive for follow-up calls.
+test_http_handler_exit_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    Reply1 = rpc_call(Conn, #{
+        jsonrpc => <<"2.0">>, method => <<"crash_exit">>, params => [], id => 1
+    }),
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := 1
+        },
+        Reply1
+    ),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+        })
+    ).
+
 %%% WebSocket test cases
 
 test_ws_call(Config) ->
@@ -580,9 +689,9 @@ test_ws_malformed_json(Config) ->
         jiffy:decode(RespBin, [return_maps])
     ).
 
-%% Same idea as test_http_handler_timeout but over WS. The WS handler emits
-%% a -32603 envelope with id: null on timeout (the spec doesn't guarantee
-%% we can extract the id from arbitrary parsed payloads cheaply).
+%% Same idea as test_http_handler_timeout but over WS — the WS handler
+%% must echo the original request `id' so the client can correlate the
+%% timeout error to the originating call.
 test_ws_handler_timeout(Config) ->
     Conn = ?config(conn, Config),
     StreamRef = ws_upgrade(Conn),
@@ -599,7 +708,7 @@ test_ws_handler_timeout(Config) ->
                 <<"message">> => <<"Internal error">>,
                 <<"data">> => #{<<"reason">> => <<"timeout">>}
             },
-            <<"id">> => null
+            <<"id">> => 1
         },
         jiffy:decode(RespBin, [return_maps])
     ).
@@ -631,6 +740,259 @@ test_ws_handler_crash_isolation(Config) ->
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
         jiffy:decode(RespBin2, [return_maps])
     ).
+
+%% Same as test_ws_handler_crash_isolation but goes through the worker
+%% isolation path instead of the dispatcher's catch — the handler calls
+%% `exit/1', the worker dies, the WS handler reports -32603, and the
+%% connection survives.
+test_ws_handler_exit_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame1 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"crash_exit">>, params => [], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame1}),
+    {ws, {text, RespBin1}} = gun:await(Conn, StreamRef, 5000),
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := 1
+        },
+        jiffy:decode(RespBin1, [return_maps])
+    ),
+    Frame2 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame2}),
+    {ws, {text, RespBin2}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        jiffy:decode(RespBin2, [return_maps])
+    ).
+
+%% A client that advertises a `Sec-WebSocket-Protocol' must still be allowed
+%% to upgrade. The server doesn't select any subprotocol, so the upgrade
+%% response carries no `sec-websocket-protocol' header. JSON-RPC traffic
+%% afterwards works normally.
+test_ws_subprotocol_offered(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = gun:ws_upgrade(
+        Conn, "/ws", [{<<"sec-websocket-protocol">>, <<"foo">>}]
+    ),
+    UpgradeHeaders =
+        receive
+            {gun_upgrade, Conn, StreamRef, [<<"websocket">>], Hs} ->
+                Hs;
+            {gun_response, Conn, StreamRef, _, Status, _Hs} ->
+                erlang:error({ws_upgrade_failed, Status})
+        after 5000 ->
+            erlang:error(ws_upgrade_timeout)
+        end,
+    ?assertEqual(
+        undefined,
+        proplists:get_value(<<"sec-websocket-protocol">>, UpgradeHeaders)
+    ),
+    Frame = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 1},
+        jiffy:decode(RespBin, [return_maps])
+    ).
+
+%% A WS text frame larger than `ws_max_frame_bytes' (set to 4096 in
+%% init_per_testcase) must not OOM the node — Cowboy closes the connection
+%% with status 1009 (message too big) when the frame exceeds the limit.
+test_ws_oversize_frame(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Big = binary:copy(<<"x">>, 8192),
+    gun:ws_send(Conn, StreamRef, {text, Big}),
+    Result =
+        receive
+            {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code};
+            {gun_ws, Conn, StreamRef, close} -> {close, 1006};
+            {gun_down, Conn, _Proto, _Reason, _Killed} -> down
+        after 5000 ->
+            erlang:error(no_close_received)
+        end,
+    ?assertMatch({close, 1009}, Result).
+
+%% A binary frame on the WS endpoint must close the connection with
+%% status 1003 (Unsupported Data) — JSON-RPC framing is text-only and
+%% silently dropping the frame leaves the client hanging.
+test_ws_binary_frame(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    gun:ws_send(Conn, StreamRef, {binary, <<"junk">>}),
+    Result =
+        receive
+            {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code}
+        after 5000 ->
+            erlang:error(no_close_received)
+        end,
+    ?assertMatch({close, 1003}, Result).
+
+%% `json_rpc_ws:push/3' delivers a single Notification to one WS handler
+%% pid. We open one WS connection, look up its handler pid via
+%% ranch:procs/2, push, and assert the client receives the text frame.
+test_ws_push(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    HandlerPid = ws_handler_pid(),
+    ok = json_rpc_ws:push(HandlerPid, <<"event">>, #{<<"k">> => 1}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    Decoded = jiffy:decode(RespBin, [return_maps]),
+    %% A Notification has no `id' member.
+    ?assertNot(maps:is_key(<<"id">>, Decoded)),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"method">> => <<"event">>,
+            <<"params">> => #{<<"k">> => 1}
+        },
+        Decoded
+    ).
+
+%% `json_rpc_ws:publish/3' fans a Notification out to every subscriber of
+%% `Topic'. Open two WS connections, subscribe both, publish, verify both
+%% receive the frame. Then unsubscribe one, publish again, verify only the
+%% remaining subscriber gets it.
+test_ws_publish(Config) ->
+    Conn1 = ?config(conn, Config),
+    Stream1 = ws_upgrade(Conn1),
+    {ok, Conn2} = gun:open(?HOST, ?PORT, #{
+        transport => tcp, protocols => [http], retry => 0
+    }),
+    {ok, http} = gun:await_up(Conn2, 5000),
+    try
+        Stream2 = ws_upgrade_on(Conn2),
+        [PidA, PidB] = ws_handler_pids(2),
+        ok = json_rpc_ws:subscribe(PidA, news),
+        ok = json_rpc_ws:subscribe(PidB, news),
+        ok = json_rpc_ws:publish(news, <<"hi">>, [1, 2]),
+        Frame1 = await_text(Conn1, Stream1),
+        Frame2 = await_text(Conn2, Stream2),
+        Expected = #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"method">> => <<"hi">>,
+            <<"params">> => [1, 2]
+        },
+        ?assertEqual(Expected, jiffy:decode(Frame1, [return_maps])),
+        ?assertEqual(Expected, jiffy:decode(Frame2, [return_maps])),
+        ok = json_rpc_ws:unsubscribe(PidB, news),
+        ok = json_rpc_ws:publish(news, <<"hi2">>, [3]),
+        Frame1b = await_text(Conn1, Stream1),
+        ?assertEqual(<<"hi2">>, maps:get(<<"method">>, jiffy:decode(Frame1b, [return_maps]))),
+        ?assertEqual({error, timeout}, gun:await(Conn2, Stream2, 200))
+    after
+        gun:close(Conn2)
+    end.
+
+%% `pg' monitors its members, so when a WS handler process exits its
+%% subscriptions disappear automatically. Open a connection, subscribe to a
+%% topic, close the connection, and assert the topic's member list is
+%% empty.
+test_ws_subscriber_cleanup_on_close(Config) ->
+    Conn = ?config(conn, Config),
+    _StreamRef = ws_upgrade(Conn),
+    HandlerPid = ws_handler_pid(),
+    ok = json_rpc_ws:subscribe(HandlerPid, cleanup_topic),
+    ?assertEqual(
+        [HandlerPid],
+        pg:get_members(json_rpc, {json_rpc_topic, cleanup_topic})
+    ),
+    MRef = erlang:monitor(process, HandlerPid),
+    gun:close(Conn),
+    receive
+        {'DOWN', MRef, process, HandlerPid, _} -> ok
+    after 5000 ->
+        erlang:error(handler_did_not_exit)
+    end,
+    %% Members are cleaned up asynchronously by the pg monitor; poll briefly.
+    ok = wait_for_pg_cleanup({json_rpc_topic, cleanup_topic}, 2000).
+
+ws_upgrade_on(Conn) ->
+    StreamRef = gun:ws_upgrade(Conn, "/ws"),
+    receive
+        {gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Hs} -> StreamRef
+    after 5000 ->
+        erlang:error(ws_upgrade_timeout)
+    end.
+
+await_text(Conn, StreamRef) ->
+    case gun:await(Conn, StreamRef, 5000) of
+        {ws, {text, Bin}} -> Bin;
+        Other -> erlang:error({unexpected, Other})
+    end.
+
+ws_handler_pid() ->
+    [Pid] = ws_handler_pids(1),
+    Pid.
+
+%% Wait briefly until ranch reports the expected number of connection
+%% processes. Returns the pid list, sorted to make positional access stable
+%% across runs.
+ws_handler_pids(N) ->
+    ws_handler_pids(N, 50).
+
+ws_handler_pids(N, 0) ->
+    erlang:error({no_ws_handler_pids, N, ranch:procs(json_rpc_listener, connections)});
+ws_handler_pids(N, Tries) ->
+    Pids = ranch:procs(json_rpc_listener, connections),
+    case length(Pids) =:= N of
+        true -> lists:sort(Pids);
+        false ->
+            timer:sleep(20),
+            ws_handler_pids(N, Tries - 1)
+    end.
+
+wait_for_pg_cleanup(_Group, Budget) when Budget =< 0 ->
+    erlang:error(pg_cleanup_timeout);
+wait_for_pg_cleanup(Group, Budget) ->
+    case pg:get_members(json_rpc, Group) of
+        [] -> ok;
+        _ ->
+            timer:sleep(50),
+            wait_for_pg_cleanup(Group, Budget - 50)
+    end.
+
+%% Open a WS connection, then stop the application from a separate
+%% process. The WS handler must receive the drain broadcast and emit a
+%% 1001 close frame within the drain window. Restart the app on the way
+%% out so later tests keep working.
+test_ws_drain_on_shutdown(_Config) ->
+    {ok, Conn} = gun:open(?HOST, ?PORT, #{
+        transport => tcp, protocols => [http], retry => 0
+    }),
+    {ok, http} = gun:await_up(Conn, 5000),
+    try
+        StreamRef = ws_upgrade_on(Conn),
+        Self = self(),
+        Stopper = spawn(fun() ->
+            ok = application:stop(json_rpc),
+            Self ! {stopped, self()}
+        end),
+        Result =
+            receive
+                {gun_ws, Conn, StreamRef, {close, Code, _Reason}} -> {close, Code}
+            after 6000 ->
+                erlang:error(no_close_received)
+            end,
+        ?assertEqual({close, 1001}, Result),
+        receive
+            {stopped, Stopper} -> ok
+        after 6000 ->
+            erlang:error(stop_did_not_complete)
+        end
+    after
+        gun:close(Conn),
+        {ok, _} = application:ensure_all_started(json_rpc),
+        register_methods()
+    end.
 
 %%% WebSocket helpers
 
@@ -665,7 +1027,7 @@ test_rpc_discover(Config) ->
         <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
         <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
         <<"throw_reserved_error">>, <<"slow">>, <<"crash">>,
-        <<"rpc.discover">>
+        <<"crash_exit">>, <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,

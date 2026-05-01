@@ -80,15 +80,17 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 %% Best-effort graceful shutdown: install a 503-replying dispatch so no new
-%% work is accepted, poll Ranch until in-flight connections drain (capped at
-%% `drain_timeout_ms'), then stop the listener. For stronger guarantees use
-%% a load balancer that stops sending traffic before SIGTERM.
+%% work is accepted, ask every live WS handler to send a 1001 close frame,
+%% then poll Ranch until in-flight connections drain (capped at
+%% `drain_timeout_ms') and stop the listener. For stronger guarantees use a
+%% load balancer that stops sending traffic before SIGTERM.
 terminate(_Reason, _State) ->
     DrainMs = json_rpc_config:get(drain_timeout_ms),
     DrainDispatch = cowboy_router:compile([
         {'_', [{"/[...]", json_rpc_drain_handler, []}]}
     ]),
     _ = cowboy:set_env(?LISTENER, dispatch, DrainDispatch),
+    broadcast_ws_drain(),
     Deadline = erlang:monotonic_time(millisecond) + DrainMs,
     wait_drain(Deadline),
     _ = cowboy:stop_listener(?LISTENER),
@@ -110,4 +112,20 @@ wait_drain(Deadline) ->
                     timer:sleep(50),
                     wait_drain(Deadline)
             end
+    end.
+
+%% Send a `json_rpc_drain' message to every WS handler that joined the
+%% drain group in `websocket_init/1'. Each handler responds by emitting a
+%% 1001 close frame and exiting, which lets the wait_drain/1 poll above
+%% reach an empty connection list quickly instead of relying on the
+%% drain-deadline brutal-kill.
+broadcast_ws_drain() ->
+    try pg:get_members(json_rpc, json_rpc_ws_connections) of
+        Pids ->
+            lists:foreach(fun(Pid) -> Pid ! json_rpc_drain end, Pids)
+    catch
+        %% The pg scope may already be down (e.g. supervisor shutdown
+        %% order). Treat that as "no WS handlers to notify"; the
+        %% wait_drain poll still bounds total shutdown time.
+        _:_ -> ok
     end.

@@ -14,7 +14,12 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--export([dispatch/1, create_error_response/3, create_error_response/4]).
+-export([
+    dispatch/1,
+    create_error_response/3,
+    create_error_response/4,
+    call_id_for_error/1
+]).
 
 -type id() :: binary() | integer() | float() | null.
 -type reply() :: no_response | map() | [map()].
@@ -46,22 +51,43 @@ process_request(Request) when is_map(Request) ->
 process_request(_Request) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
-process_single_request(
-    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request
-) when is_binary(Method), Method =/= <<>> ->
+process_single_request(Request) when is_map(Request) ->
+    %% Extract the id best-effort first so a per-element envelope error can
+    %% still echo the request id back to the client. extract_call_id/1
+    %% returns 'notification' (id absent), null/binary/integer/float (valid
+    %% id), or {error, invalid_id} (id present but not a permitted JSON
+    %% type).
     case extract_call_id(Request) of
         {error, invalid_id} ->
             create_error_response(null, -32600, <<"Invalid Request">>);
         Id ->
-            case validate_params(Request) of
-                {ok, Params} ->
-                    dispatch_method(Method, Params, Id);
+            case validate_envelope(Request) of
+                {ok, Method} ->
+                    case validate_params(Request) of
+                        {ok, Params} ->
+                            dispatch_method(Method, Params, Id);
+                        {error, Code, Msg} ->
+                            response_or_drop(
+                                Id, create_error_response(call_id(Id), Code, Msg)
+                            )
+                    end;
                 {error, Code, Msg} ->
-                    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+                    %% Envelope-level errors are not droppable as
+                    %% notifications: the request was malformed, so we owe
+                    %% the client an error envelope (with id: null when the
+                    %% id was absent).
+                    create_error_response(call_id(Id), Code, Msg)
             end
     end;
 process_single_request(_) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
+
+validate_envelope(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method}) when
+    is_binary(Method), Method =/= <<>>
+->
+    {ok, Method};
+validate_envelope(_) ->
+    {error, -32600, <<"Invalid Request">>}.
 
 validate_params(Request) ->
     case maps:find(<<"params">>, Request) of
@@ -109,7 +135,14 @@ invoke(Thunk, Id) ->
             handle_thrown(Id, Code, Msg, no_data);
         throw:{jsonrpc_error, Code, Msg, Data} when is_integer(Code), is_binary(Msg) ->
             handle_thrown(Id, Code, Msg, {data, Data});
-        Class:Reason:Stacktrace ->
+        %% Convert handler bugs (`error:_') and bare throws into a -32603
+        %% envelope so a single misbehaving handler doesn't take down the
+        %% connection. We deliberately do *not* catch `exit:_': an
+        %% `exit/1' from a handler signals an unrecoverable failure that
+        %% should propagate to `json_rpc_worker', which kills the worker
+        %% process, returns `{error, {crash, exit, _}}' to the transport,
+        %% and lets the transport reply with a generic Internal error.
+        Class:Reason:Stacktrace when Class =:= error; Class =:= throw ->
             ?LOG_ERROR("Handler error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>))
     end.
@@ -155,3 +188,18 @@ create_error_response(Id, Code, Message, Data) ->
         error => #{code => Code, message => Message, data => Data},
         id => Id
     }.
+
+%% Best-effort id extraction from a parsed JSON-RPC payload, used by the
+%% transport layers when synthesising a timeout/crash error envelope. For a
+%% single-call object whose `id' is one of the JSON types permitted by the
+%% spec (string/number/null) we echo it back so the client can correlate the
+%% error to the originating request. For batches and any other shape we fall
+%% back to `null' — there is no single id to attribute the error to.
+-spec call_id_for_error(term()) -> id().
+call_id_for_error(Parsed) when is_map(Parsed) ->
+    case maps:find(<<"id">>, Parsed) of
+        {ok, Id} when is_binary(Id); is_integer(Id); is_float(Id); Id =:= null -> Id;
+        _ -> null
+    end;
+call_id_for_error(_Parsed) ->
+    null.

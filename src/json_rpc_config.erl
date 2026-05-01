@@ -27,7 +27,9 @@
     | idle_timeout_ms
     | request_timeout_ms
     | drain_timeout_ms
-    | max_methods.
+    | max_methods
+    | ws_max_frame_bytes
+    | ws_idle_timeout_ms.
 
 -export_type([key/0]).
 
@@ -64,7 +66,9 @@ validate_all() ->
         idle_timeout_ms,
         request_timeout_ms,
         drain_timeout_ms,
-        max_methods
+        max_methods,
+        ws_max_frame_bytes,
+        ws_idle_timeout_ms
     ],
     lists:foreach(fun(K) -> _ = ?MODULE:get(K) end, Keys),
     ok.
@@ -103,6 +107,14 @@ validate(max_methods, V) when is_integer(V), V > 0 ->
     V;
 validate(max_methods, V) ->
     bad(max_methods, V, <<"must be a positive integer">>);
+validate(ws_max_frame_bytes, V) when is_integer(V), V > 0 ->
+    V;
+validate(ws_max_frame_bytes, V) ->
+    bad(ws_max_frame_bytes, V, <<"must be a positive integer">>);
+validate(ws_idle_timeout_ms, V) when is_integer(V), V > 0 ->
+    V;
+validate(ws_idle_timeout_ms, V) ->
+    bad(ws_idle_timeout_ms, V, <<"must be a positive integer">>);
 validate(Key, _V) ->
     erlang:error(badarg, [Key]).
 

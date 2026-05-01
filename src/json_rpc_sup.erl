@@ -37,6 +37,18 @@ init([]) ->
             type => worker,
             modules => [json_rpc_methods]
         },
+        %% A `pg' scope is itself a process. Start it before the listener
+        %% so the WS handlers can join groups (for server-push) and the
+        %% drain group as soon as they accept a connection. If the scope
+        %% crashes, rest_for_one will tear the listener down too.
+        #{
+            id => json_rpc_pg,
+            start => {pg, start_link, [json_rpc]},
+            restart => permanent,
+            shutdown => 5000,
+            type => worker,
+            modules => [pg]
+        },
         #{
             id => json_rpc_listener,
             start => {json_rpc_listener, start_link, []},

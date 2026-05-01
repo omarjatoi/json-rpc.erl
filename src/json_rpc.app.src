@@ -23,7 +23,9 @@
         {idle_timeout_ms, 60000},
         {request_timeout_ms, 10000},
         {drain_timeout_ms, 5000},
-        {max_methods, 1024}
+        {max_methods, 1024},
+        {ws_max_frame_bytes, 1048576},
+        {ws_idle_timeout_ms, 60000}
     ]},
     {mod, {json_rpc_app, []}},
     {licenses, ["Apache-2.0"]},
