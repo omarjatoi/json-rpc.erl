@@ -30,20 +30,33 @@
 
 -record(state, {listener, methods = #{}, auth_fun}).
 
+-type id() :: binary() | integer() | null.
+-type method_fun() :: fun((term()) -> term()).
+-type auth_fun() :: fun((map()) -> ok | term()).
+
+-export_type([id/0, method_fun/0, auth_fun/0]).
+
 %% API
+
+-spec start_link(inet:port_number()) -> {ok, pid()} | {error, term()}.
 start_link(Port) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [Port], []).
 
+-spec stop() -> ok.
 stop() ->
     gen_server:stop(?SERVER).
 
+-spec register_method(binary(), method_fun()) -> ok.
 register_method(Name, Fun) when is_binary(Name), is_function(Fun, 1) ->
     gen_server:call(?SERVER, {register_method, Name, Fun}, 5000).
 
+-spec set_auth(auth_fun()) -> ok.
 set_auth(AuthFun) when is_function(AuthFun, 1) ->
     gen_server:call(?SERVER, {set_auth, AuthFun}).
 
 %% gen_server callbacks
+
+-spec init([inet:port_number()]) -> {ok, #state{}} | {stop, term()}.
 init([Port]) when is_integer(Port), Port > 0, Port < 65536 ->
     process_flag(trap_exit, true),
     case gen_tcp:listen(Port, [binary, {packet, 0}, {active, false}, {reuseaddr, true}]) of
