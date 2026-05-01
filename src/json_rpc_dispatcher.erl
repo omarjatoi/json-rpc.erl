@@ -130,7 +130,14 @@ invoke(Thunk, Id) ->
             handle_thrown(Id, Code, Msg, no_data);
         throw:{jsonrpc_error, Code, Msg, Data} when is_integer(Code), is_binary(Msg) ->
             handle_thrown(Id, Code, Msg, {data, Data});
-        Class:Reason:Stacktrace ->
+        %% Convert handler bugs (`error:_') and bare throws into a -32603
+        %% envelope so a single misbehaving handler doesn't take down the
+        %% connection. We deliberately do *not* catch `exit:_': an
+        %% `exit/1' from a handler signals an unrecoverable failure that
+        %% should propagate to `json_rpc_worker', which kills the worker
+        %% process, returns `{error, {crash, exit, _}}' to the transport,
+        %% and lets the transport reply with a generic Internal error.
+        Class:Reason:Stacktrace when Class =:= error; Class =:= throw ->
             ?LOG_ERROR("Handler error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
             response_or_drop(Id, create_error_response(call_id(Id), -32603, <<"Internal error">>))
     end.

@@ -45,7 +45,8 @@
     test_http_method_not_allowed/1,
     test_http_unsupported_media_type/1,
     test_http_handler_timeout/1,
-    test_http_handler_crash_isolation/1
+    test_http_handler_crash_isolation/1,
+    test_http_handler_exit_isolation/1
 ]).
 
 %% WebSocket test cases.
@@ -55,7 +56,8 @@
     test_ws_batch/1,
     test_ws_malformed_json/1,
     test_ws_handler_timeout/1,
-    test_ws_handler_crash_isolation/1
+    test_ws_handler_crash_isolation/1,
+    test_ws_handler_exit_isolation/1
 ]).
 
 %% Registry test cases.
@@ -107,12 +109,14 @@ all() ->
         test_http_unsupported_media_type,
         test_http_handler_timeout,
         test_http_handler_crash_isolation,
+        test_http_handler_exit_isolation,
         test_ws_call,
         test_ws_notification,
         test_ws_batch,
         test_ws_malformed_json,
         test_ws_handler_timeout,
         test_ws_handler_crash_isolation,
+        test_ws_handler_exit_isolation,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -209,7 +213,8 @@ register_methods() ->
         {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
         {<<"throw_reserved_error">>, {json_rpc_test_methods, throw_reserved_error}},
         {<<"slow">>, {json_rpc_test_methods, slow}},
-        {<<"crash">>, {json_rpc_test_methods, crash}}
+        {<<"crash">>, {json_rpc_test_methods, crash}},
+        {<<"crash_exit">>, {json_rpc_test_methods, crash_exit}}
     ],
     lists:foreach(
         fun({Name, Handler}) -> ok = json_rpc_methods:register_method(Name, Handler) end,
@@ -567,6 +572,30 @@ test_http_handler_crash_isolation(Config) ->
         })
     ).
 
+%% A handler that calls `exit/1' is not caught by the dispatcher's narrowed
+%% try/catch — the worker process dies, json_rpc_worker returns
+%% `{error, {crash, exit, _}}', and the HTTP handler must turn that into a
+%% -32603 envelope while keeping the connection alive for follow-up calls.
+test_http_handler_exit_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    Reply1 = rpc_call(Conn, #{
+        jsonrpc => <<"2.0">>, method => <<"crash_exit">>, params => [], id => 1
+    }),
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := 1
+        },
+        Reply1
+    ),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+        })
+    ).
+
 %%% WebSocket test cases
 
 test_ws_call(Config) ->
@@ -674,6 +703,38 @@ test_ws_handler_crash_isolation(Config) ->
         jiffy:decode(RespBin2, [return_maps])
     ).
 
+%% Same as test_ws_handler_crash_isolation but goes through the worker
+%% isolation path instead of the dispatcher's catch — the handler calls
+%% `exit/1', the worker dies, the WS handler reports -32603, and the
+%% connection survives.
+test_ws_handler_exit_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame1 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"crash_exit">>, params => [], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame1}),
+    {ws, {text, RespBin1}} = gun:await(Conn, StreamRef, 5000),
+    %% The id is loose here — a separate change in this PR tightens id
+    %% preservation on WS error envelopes.
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := _
+        },
+        jiffy:decode(RespBin1, [return_maps])
+    ),
+    Frame2 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame2}),
+    {ws, {text, RespBin2}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        jiffy:decode(RespBin2, [return_maps])
+    ).
+
 %%% WebSocket helpers
 
 ws_upgrade(Conn) ->
@@ -707,7 +768,7 @@ test_rpc_discover(Config) ->
         <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
         <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
         <<"throw_reserved_error">>, <<"slow">>, <<"crash">>,
-        <<"rpc.discover">>
+        <<"crash_exit">>, <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,

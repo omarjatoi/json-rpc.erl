@@ -22,7 +22,8 @@
     throw_error/1,
     throw_reserved_error/1,
     slow/1,
-    crash/1
+    crash/1,
+    crash_exit/1
 ]).
 
 subtract([A, B]) -> A - B.
@@ -50,8 +51,16 @@ slow([Ms]) when is_integer(Ms), Ms >= 0 ->
     timer:sleep(Ms),
     <<"done">>.
 
-%% Crashes the worker process so the dispatcher's surrounding try/catch
-%% doesn't get a chance to convert the exception. Used to verify that the
-%% per-request worker isolates crashes from the connection process.
+%% Raises an `error' exception so the dispatcher's surrounding try/catch
+%% converts it into a -32603 Internal error envelope. Used to verify that
+%% the dispatcher's narrowed catch still handles handler bugs gracefully.
 crash(_) ->
+    error(boom).
+
+%% Calls `exit/1' so the exception is not caught by the dispatcher and
+%% propagates to `json_rpc_worker', which kills the worker process and
+%% returns `{error, {crash, exit, boom}}' to the transport. Used to verify
+%% that the per-request worker isolates real handler crashes from the
+%% connection process.
+crash_exit(_) ->
     exit(boom).
