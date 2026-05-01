@@ -46,22 +46,43 @@ process_request(Request) when is_map(Request) ->
 process_request(_Request) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
 
-process_single_request(
-    #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request
-) when is_binary(Method), Method =/= <<>> ->
+process_single_request(Request) when is_map(Request) ->
+    %% Extract the id best-effort first so a per-element envelope error can
+    %% still echo the request id back to the client. extract_call_id/1
+    %% returns 'notification' (id absent), null/binary/integer/float (valid
+    %% id), or {error, invalid_id} (id present but not a permitted JSON
+    %% type).
     case extract_call_id(Request) of
         {error, invalid_id} ->
             create_error_response(null, -32600, <<"Invalid Request">>);
         Id ->
-            case validate_params(Request) of
-                {ok, Params} ->
-                    dispatch_method(Method, Params, Id);
+            case validate_envelope(Request) of
+                {ok, Method} ->
+                    case validate_params(Request) of
+                        {ok, Params} ->
+                            dispatch_method(Method, Params, Id);
+                        {error, Code, Msg} ->
+                            response_or_drop(
+                                Id, create_error_response(call_id(Id), Code, Msg)
+                            )
+                    end;
                 {error, Code, Msg} ->
-                    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+                    %% Envelope-level errors are not droppable as
+                    %% notifications: the request was malformed, so we owe
+                    %% the client an error envelope (with id: null when the
+                    %% id was absent).
+                    create_error_response(call_id(Id), Code, Msg)
             end
     end;
 process_single_request(_) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
+
+validate_envelope(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method}) when
+    is_binary(Method), Method =/= <<>>
+->
+    {ok, Method};
+validate_envelope(_) ->
+    {error, -32600, <<"Invalid Request">>}.
 
 validate_params(Request) ->
     case maps:find(<<"params">>, Request) of

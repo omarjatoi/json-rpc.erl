@@ -37,6 +37,7 @@
     test_http_invalid_id_array/1,
     test_http_invalid_id_object/1,
     test_http_batch_mixed/1,
+    test_http_batch_element_id_preserved_on_envelope_error/1,
     test_http_all_notification_batch/1,
     test_http_empty_batch/1,
     test_http_malformed_json/1,
@@ -97,6 +98,7 @@ all() ->
         test_http_invalid_id_array,
         test_http_invalid_id_object,
         test_http_batch_mixed,
+        test_http_batch_element_id_preserved_on_envelope_error,
         test_http_all_notification_batch,
         test_http_empty_batch,
         test_http_malformed_json,
@@ -410,6 +412,46 @@ test_http_batch_mixed(Config) ->
             <<"error">> => #{<<"code">> => -32601, <<"message">> => <<"Method not found">>},
             <<"id">> => <<"9">>
         }
+    ],
+    ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
+
+%% Per-batch-element envelope errors must preserve the original `id' when one
+%% was present and well-typed. The dispatcher used to require a fully valid
+%% envelope before extracting the id, so a batch element with a valid id but
+%% (e.g.) wrong jsonrpc version came back as id: null and clients couldn't
+%% correlate the error to its request.
+test_http_batch_element_id_preserved_on_envelope_error(Config) ->
+    Conn = ?config(conn, Config),
+    Batch = [
+        %% Wrong jsonrpc version, but id is present and valid -> echo id.
+        #{jsonrpc => <<"1.0">>, method => <<"subtract">>, params => [1, 2], id => <<"v">>},
+        %% Missing method, valid id -> echo id.
+        #{jsonrpc => <<"2.0">>, id => <<"m">>},
+        %% Completely garbage element (not an object) -> id: null (cannot
+        %% extract one).
+        <<"junk">>,
+        %% Sanity: a normal call still works alongside the broken elements.
+        #{jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => <<"ok">>}
+    ],
+    Decoded = rpc_call(Conn, Batch),
+    ?assert(is_list(Decoded)),
+    Expected = [
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => <<"v">>
+        },
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => <<"m">>
+        },
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => <<"ok">>}
     ],
     ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
 
