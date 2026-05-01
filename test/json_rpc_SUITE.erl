@@ -49,6 +49,23 @@
     test_ws_malformed_json/1
 ]).
 
+%% Registry test cases.
+-export([
+    test_rpc_discover/1,
+    test_register_rpc_reserved/1,
+    test_register_invalid_handler/1,
+    test_register_full/1
+]).
+
+%% Application lifecycle test cases.
+-export([
+    test_app_lifecycle/1,
+    test_app_drain/1
+]).
+
+%% Used as a placeholder MFA for register/unregister tests.
+-export([dummy_handler/1]).
+
 -define(PORT, 18080).
 -define(HOST, "localhost").
 -define(JSON_HEADERS, [
@@ -77,10 +94,20 @@ all() ->
         test_ws_call,
         test_ws_notification,
         test_ws_batch,
-        test_ws_malformed_json
+        test_ws_malformed_json,
+        test_rpc_discover,
+        test_register_rpc_reserved,
+        test_register_invalid_handler,
+        test_register_full,
+        test_app_drain,
+        %% Lifecycle tests must run last since they stop the application.
+        test_app_lifecycle
     ].
 
 init_per_suite(Config) ->
+    %% Load the app first so set_env values aren't overwritten by the
+    %% defaults baked into json_rpc.app.src on subsequent load.
+    _ = application:load(json_rpc),
     application:set_env(json_rpc, port, ?PORT),
     %% Use a small body cap so the oversize-body test has something to bump
     %% into without us shipping a multi-MB payload through CT.
@@ -94,14 +121,19 @@ end_per_suite(_Config) ->
     ok = application:stop(json_rpc),
     ok.
 
-init_per_testcase(_TestCase, Config) ->
-    {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
-        transport => tcp,
-        protocols => [http],
-        retry => 0
-    }),
-    {ok, http} = gun:await_up(ConnPid, 5000),
-    [{conn, ConnPid} | Config].
+init_per_testcase(TestCase, Config) ->
+    case needs_conn(TestCase) of
+        false ->
+            Config;
+        true ->
+            {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
+                transport => tcp,
+                protocols => [http],
+                retry => 0
+            }),
+            {ok, http} = gun:await_up(ConnPid, 5000),
+            [{conn, ConnPid} | Config]
+    end.
 
 end_per_testcase(_TestCase, Config) ->
     case ?config(conn, Config) of
@@ -110,22 +142,30 @@ end_per_testcase(_TestCase, Config) ->
     end,
     ok.
 
+%% Test cases that don't open a gun connection in init_per_testcase. The
+%% lifecycle test owns the application start/stop itself; the registry
+%% tests don't talk over the wire.
+needs_conn(test_app_lifecycle) -> false;
+needs_conn(test_register_rpc_reserved) -> false;
+needs_conn(test_register_invalid_handler) -> false;
+needs_conn(test_register_full) -> false;
+needs_conn(_) -> true.
+
 %%% Method registration
 
 register_methods() ->
     Methods = [
-        {<<"subtract">>, fun([A, B]) -> A - B end},
-        {<<"sum">>, fun([A, B, C]) -> A + B + C end},
-        {<<"get_data">>, fun(_) -> [<<"hello">>, 5] end},
-        {<<"update">>, fun(_) -> ok end},
-        {<<"notify_sum">>, fun(_) -> ok end},
-        {<<"notify_hello">>, fun(_) -> ok end},
-        {<<"throw_error">>, fun(_) ->
-            throw({jsonrpc_error, -32602, <<"bad arg">>, #{<<"detail">> => <<"oops">>}})
-        end}
+        {<<"subtract">>, {json_rpc_test_methods, subtract}},
+        {<<"sum">>, {json_rpc_test_methods, sum}},
+        {<<"get_data">>, {json_rpc_test_methods, get_data}},
+        {<<"update">>, {json_rpc_test_methods, update}},
+        {<<"notify_sum">>, {json_rpc_test_methods, notify_sum}},
+        {<<"notify_hello">>, {json_rpc_test_methods, notify_hello}},
+        {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
+        {<<"slow">>, {json_rpc_test_methods, slow}}
     ],
     lists:foreach(
-        fun({Name, Fun}) -> ok = json_rpc_server:register_method(Name, Fun) end,
+        fun({Name, Handler}) -> ok = json_rpc_methods:register_method(Name, Handler) end,
         Methods
     ).
 
@@ -407,3 +447,143 @@ ws_upgrade(Conn) ->
 %% Drop the response Headers value when comparing — we only care about
 %% Status/Body for the cases that use this.
 normalize({Status, _Hs, Body}) -> {Status, ignore, Body}.
+
+%%% Registry test cases
+
+test_rpc_discover(Config) ->
+    Conn = ?config(conn, Config),
+    Req = #{jsonrpc => <<"2.0">>, method => <<"rpc.discover">>, id => 1},
+    {200, _Hs, Body} = raw_post(Conn, jiffy:encode(Req)),
+    #{<<"result">> := Methods, <<"id">> := 1} = jiffy:decode(Body, [return_maps]),
+    %% Every method we registered in init_per_suite plus the built-in
+    %% rpc.discover itself must be present. Any additional methods that
+    %% other tests register transiently shouldn't break this.
+    Required = [
+        <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
+        <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
+        <<"slow">>, <<"rpc.discover">>
+    ],
+    lists:foreach(
+        fun(M) -> ?assert(lists:member(M, Methods)) end,
+        Required
+    ).
+
+test_register_rpc_reserved(_Config) ->
+    %% Reserved namespace is rejected at registration time. The built-in
+    %% rpc.discover is the single allowed exception.
+    ?assertMatch(
+        {error, {invalid_method_name, <<"rpc.foo">>}},
+        json_rpc_methods:register_method(<<"rpc.foo">>, {?MODULE, dummy_handler})
+    ),
+    ?assertMatch(
+        {error, {invalid_method_name, <<>>}},
+        json_rpc_methods:register_method(<<>>, {?MODULE, dummy_handler})
+    ).
+
+test_register_invalid_handler(_Config) ->
+    ?assertMatch(
+        {error, {invalid_handler, _}},
+        json_rpc_methods:register_method(<<"bogus">>, not_an_mfa)
+    ),
+    ?assertMatch(
+        {error, {invalid_handler, _}},
+        json_rpc_methods:register_method(<<"bogus">>, {only_one})
+    ).
+
+test_register_full(_Config) ->
+    %% Set a tiny cap, register up to it, then assert the next one fails.
+    %% Restore the original cap on the way out so later tests aren't affected.
+    Original = application:get_env(json_rpc, max_methods),
+    Existing = length(json_rpc_methods:list_methods()),
+    Cap = Existing + 3,
+    application:set_env(json_rpc, max_methods, Cap),
+    try
+        ok = json_rpc_methods:register_method(<<"cap_a">>, {?MODULE, dummy_handler}),
+        ok = json_rpc_methods:register_method(<<"cap_b">>, {?MODULE, dummy_handler}),
+        ok = json_rpc_methods:register_method(<<"cap_c">>, {?MODULE, dummy_handler}),
+        ?assertEqual(
+            {error, registry_full},
+            json_rpc_methods:register_method(<<"cap_d">>, {?MODULE, dummy_handler})
+        )
+    after
+        ok = json_rpc_methods:unregister_method(<<"cap_a">>),
+        ok = json_rpc_methods:unregister_method(<<"cap_b">>),
+        ok = json_rpc_methods:unregister_method(<<"cap_c">>),
+        case Original of
+            {ok, V} -> application:set_env(json_rpc, max_methods, V);
+            undefined -> application:unset_env(json_rpc, max_methods)
+        end
+    end.
+
+%%% Application lifecycle test cases
+
+%% Start an in-flight request that the handler holds open, then stop the
+%% application from a separate process. The drain timeout (default 5s) gives
+%% the in-flight request enough time to complete; assert it returns success
+%% rather than being killed mid-response. Restart the app at the end so the
+%% rest of the suite can keep running.
+test_app_drain(_Config) ->
+    %% Open a dedicated connection — the per-testcase one would race with
+    %% application stop.
+    {ok, Conn} = gun:open(?HOST, ?PORT, #{transport => tcp, protocols => [http], retry => 0}),
+    {ok, http} = gun:await_up(Conn, 5000),
+    Payload = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"slow">>, params => [800], id => 1
+    }),
+    StreamRef = gun:post(Conn, "/rpc", ?JSON_HEADERS, Payload),
+    %% Give the handler a moment to start sleeping before we tear down.
+    timer:sleep(150),
+    Self = self(),
+    Stopper = spawn(fun() ->
+        ok = application:stop(json_rpc),
+        Self ! {stopped, self()}
+    end),
+    {response, nofin, 200, _Hs} = gun:await(Conn, StreamRef, 5000),
+    {ok, Body} = gun:await_body(Conn, StreamRef, 5000),
+    ?assertMatch(
+        #{<<"result">> := <<"done">>, <<"id">> := 1},
+        jiffy:decode(Body, [return_maps])
+    ),
+    receive
+        {stopped, Stopper} -> ok
+    after 6000 ->
+        erlang:error(stop_did_not_complete)
+    end,
+    gun:close(Conn),
+    %% Restart for the remaining tests.
+    {ok, _} = application:ensure_all_started(json_rpc),
+    register_methods(),
+    ok.
+
+%% Stop the application, confirm a fresh start succeeds, and that we can
+%% call a method again over a brand-new connection. Run this last so it
+%% doesn't tear the suite out from under any later test cases. We always
+%% leave the app running on the way out so end_per_suite can stop cleanly.
+test_app_lifecycle(_Config) ->
+    ok = application:stop(json_rpc),
+    try
+        {ok, _} = application:ensure_all_started(json_rpc),
+        register_methods(),
+        {ok, Conn} = gun:open(?HOST, ?PORT, #{
+            transport => tcp, protocols => [http], retry => 0
+        }),
+        {ok, http} = gun:await_up(Conn, 5000),
+        Req = #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [5, 3], id => 1
+        },
+        {200, _Hs, Body} = raw_post(Conn, jiffy:encode(Req)),
+        ?assertMatch(
+            #{<<"result">> := 2, <<"id">> := 1},
+            jiffy:decode(Body, [return_maps])
+        ),
+        gun:close(Conn)
+    catch
+        Class:Reason:Stack ->
+            %% Make sure the app is up so end_per_suite can stop it.
+            _ = application:ensure_all_started(json_rpc),
+            erlang:raise(Class, Reason, Stack)
+    end,
+    ok.
+
+%% Used as a placeholder MFA for register/unregister tests.
+dummy_handler(_) -> ok.
