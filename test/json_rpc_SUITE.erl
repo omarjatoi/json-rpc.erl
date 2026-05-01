@@ -23,86 +23,96 @@
     end_per_testcase/2
 ]).
 
+%% HTTP test cases.
 -export([
-    test_rpc_call_positional_params/1,
-    test_notification/1,
-    test_non_existent_method/1,
-    test_invalid_json/1,
-    test_invalid_request_object/1,
-    test_batch_invalid_json/1,
-    test_empty_array/1,
-    test_invalid_batch/1,
-    test_rpc_call_batch/1,
-    test_notification_batch/1,
-    test_authentication/1,
-    test_explicit_null_id_is_call/1,
-    test_all_notification_batch_no_response/1,
-    test_reserved_method_name/1,
-    test_invalid_params_type/1,
-    test_handler_throws_jsonrpc_error/1
+    test_http_positional_params/1,
+    test_http_notification/1,
+    test_http_method_not_found/1,
+    test_http_reserved_method_name/1,
+    test_http_invalid_params_type/1,
+    test_http_handler_throws_jsonrpc_error/1,
+    test_http_explicit_null_id_is_call/1,
+    test_http_batch_mixed/1,
+    test_http_all_notification_batch/1,
+    test_http_empty_batch/1,
+    test_http_malformed_json/1,
+    test_http_oversize_body/1,
+    test_http_method_not_allowed/1,
+    test_http_unsupported_media_type/1
 ]).
 
--define(PORT, 8080).
+%% WebSocket test cases.
+-export([
+    test_ws_call/1,
+    test_ws_notification/1,
+    test_ws_batch/1,
+    test_ws_malformed_json/1
+]).
+
+-define(PORT, 18080).
 -define(HOST, "localhost").
+-define(JSON_HEADERS, [
+    {<<"content-type">>, <<"application/json">>},
+    {<<"accept">>, <<"application/json">>}
+]).
 
 %%% Common Test callbacks
 
 all() ->
     [
-        test_rpc_call_positional_params,
-        test_notification,
-        test_non_existent_method,
-        test_invalid_json,
-        test_invalid_request_object,
-        test_batch_invalid_json,
-        test_empty_array,
-        test_invalid_batch,
-        test_rpc_call_batch,
-        test_notification_batch,
-        test_authentication,
-        test_explicit_null_id_is_call,
-        test_all_notification_batch_no_response,
-        test_reserved_method_name,
-        test_invalid_params_type,
-        test_handler_throws_jsonrpc_error
+        test_http_positional_params,
+        test_http_notification,
+        test_http_method_not_found,
+        test_http_reserved_method_name,
+        test_http_invalid_params_type,
+        test_http_handler_throws_jsonrpc_error,
+        test_http_explicit_null_id_is_call,
+        test_http_batch_mixed,
+        test_http_all_notification_batch,
+        test_http_empty_batch,
+        test_http_malformed_json,
+        test_http_oversize_body,
+        test_http_method_not_allowed,
+        test_http_unsupported_media_type,
+        test_ws_call,
+        test_ws_notification,
+        test_ws_batch,
+        test_ws_malformed_json
     ].
 
 init_per_suite(Config) ->
-    Pid = start_server(),
-    [{server, Pid} | Config].
+    application:set_env(json_rpc, port, ?PORT),
+    %% Use a small body cap so the oversize-body test has something to bump
+    %% into without us shipping a multi-MB payload through CT.
+    application:set_env(json_rpc, max_body_bytes, 4096),
+    {ok, _Apps} = application:ensure_all_started(json_rpc),
+    {ok, _GunApps} = application:ensure_all_started(gun),
+    register_methods(),
+    Config.
 
-end_per_suite(Config) ->
-    Pid = ?config(server, Config),
-    stop_server(Pid),
+end_per_suite(_Config) ->
+    ok = application:stop(json_rpc),
     ok.
 
 init_per_testcase(_TestCase, Config) ->
-    Client = setup_client(),
-    [{client, Client} | Config].
+    {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
+        transport => tcp,
+        protocols => [http],
+        retry => 0
+    }),
+    {ok, http} = gun:await_up(ConnPid, 5000),
+    [{conn, ConnPid} | Config].
 
 end_per_testcase(_TestCase, Config) ->
-    Client = ?config(client, Config),
-    cleanup_client(Client),
+    case ?config(conn, Config) of
+        undefined -> ok;
+        ConnPid -> gun:close(ConnPid)
+    end,
     ok.
 
-%%% Fixtures
+%%% Method registration
 
-start_server() ->
-    case json_rpc_server:start_link(?PORT) of
-        {ok, Pid} ->
-            %% start_link links the server to the init_per_suite process. CT
-            %% runs each test case in a fresh process, so the suite process
-            %% exits between init_per_suite and init_per_testcase and would
-            %% take the linked server down with it. Unlink so the server
-            %% survives across test cases; end_per_suite stops it explicitly.
-            unlink(Pid),
-            register_methods(Pid),
-            Pid;
-        {error, Reason} ->
-            erlang:error({server_start_failed, Reason})
-    end.
-
-register_methods(Pid) ->
+register_methods() ->
     Methods = [
         {<<"subtract">>, fun([A, B]) -> A - B end},
         {<<"sum">>, fun([A, B, C]) -> A + B + C end},
@@ -115,199 +125,285 @@ register_methods(Pid) ->
         end}
     ],
     lists:foreach(
-        fun({Name, Fun}) ->
-            gen_server:call(Pid, {register_method, Name, Fun})
-        end,
+        fun({Name, Fun}) -> ok = json_rpc_server:register_method(Name, Fun) end,
         Methods
     ).
 
-stop_server(Pid) ->
-    gen_server:stop(Pid).
+%%% HTTP helpers
 
-setup_client() ->
-    case json_rpc_client:connect(?HOST, ?PORT) of
-        {ok, Client} ->
-            Client;
-        {error, Reason} ->
-            erlang:error({client_connection_failed, Reason})
+%% POST a JSON-RPC payload (already encoded as a binary) to /rpc and return
+%% {Status, Headers, Body} where Body is the raw response body.
+raw_post(Conn, Payload) ->
+    raw_post(Conn, Payload, ?JSON_HEADERS).
+
+raw_post(Conn, Payload, Headers) ->
+    StreamRef = gun:post(Conn, "/rpc", Headers, Payload),
+    case gun:await(Conn, StreamRef, 5000) of
+        {response, fin, Status, RespHeaders} ->
+            {Status, RespHeaders, <<>>};
+        {response, nofin, Status, RespHeaders} ->
+            {ok, Body} = gun:await_body(Conn, StreamRef, 5000),
+            {Status, RespHeaders, Body}
     end.
 
-cleanup_client(Client) ->
-    json_rpc_client:close(Client).
+%% Issue a JSON-RPC call/notification/batch as an Erlang term, return the
+%% decoded JSON-RPC envelope (or no_response for 204s).
+rpc_call(Conn, Term) ->
+    Payload = jiffy:encode(Term),
+    case raw_post(Conn, Payload) of
+        {204, _Hs, _} ->
+            no_response;
+        {200, _Hs, Body} ->
+            jiffy:decode(Body, [return_maps])
+    end.
 
-%%% Test cases
+%%% HTTP test cases
 
-test_rpc_call_positional_params(Config) ->
-    Client = ?config(client, Config),
-    ?assertEqual({ok, 19, 1}, json_rpc_client:call(Client, <<"subtract">>, [42, 23], 1)),
-    ?assertEqual({ok, -19, 2}, json_rpc_client:call(Client, <<"subtract">>, [23, 42], 2)).
-
-test_notification(Config) ->
-    Client = ?config(client, Config),
-    ?assertEqual(ok, json_rpc_client:notify(Client, <<"update">>, [1, 2, 3, 4, 5])),
-    ?assertEqual(ok, json_rpc_client:notify(Client, <<"foobar">>, [])).
-
-test_non_existent_method(Config) ->
-    Client = ?config(client, Config),
+test_http_positional_params(Config) ->
+    Conn = ?config(conn, Config),
     ?assertEqual(
-        {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"1">>},
-        json_rpc_client:call(Client, <<"foobar">>, [], <<"1">>)
-    ).
-
-test_invalid_json(Config) ->
-    Client = ?config(client, Config),
-    ?assertEqual(
-        {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
-        json_rpc_client:raw_request(
-            Client,
-            <<"{\"jsonrpc\": \"2.0\", \"method\": \"foobar\", \"params\": \"bar\", \"baz]">>
-        )
-    ).
-
-test_invalid_request_object(Config) ->
-    Client = ?config(client, Config),
-    %% A non-binary method (here, a number) is an invalid Request object.
-    %% We use raw_request to bypass the client-side is_binary(Method) guard.
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": 1, \"params\": \"bar\"}">>,
-    ?assertEqual(
-        {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-        json_rpc_client:raw_request(Client, Payload)
-    ).
-
-test_batch_invalid_json(Config) ->
-    Client = ?config(client, Config),
-    ?assertEqual(
-        {error, #{<<"code">> => -32700, <<"message">> => <<"Parse error">>}, null},
-        json_rpc_client:raw_request(
-            Client,
-            <<"[{\"jsonrpc\": \"2.0\", \"method\": \"sum\", \"params\": [1,2,4], \"id\": \"1\"},{\"jsonrpc\": \"2.0\", \"method\"]">>
-        )
-    ).
-
-test_empty_array(Config) ->
-    Client = ?config(client, Config),
-    %% Per spec, empty batch must return a single Invalid Request object,
-    %% NOT an array. batch/2 short-circuits on [] so we use raw_request.
-    ?assertEqual(
-        {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-        json_rpc_client:raw_request(Client, <<"[]">>)
-    ).
-
-test_invalid_batch(Config) ->
-    Client = ?config(client, Config),
-    ?assertEqual(
-        {ok, [
-            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null},
-            {error, #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>}, null}
-        ]},
-        json_rpc_client:raw_request(Client, <<"[1,2,3]">>)
-    ).
-
-test_rpc_call_batch(Config) ->
-    Client = ?config(client, Config),
-    Batch = [
-        {<<"sum">>, [1, 2, 4], <<"1">>},
-        {<<"subtract">>, [42, 23], <<"2">>},
-        {<<"foo">>, [], <<"9">>}
-    ],
-    ?assertEqual(
-        {ok, [
-            {ok, 7, <<"1">>},
-            {ok, 19, <<"2">>},
-            {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"9">>}
-        ]},
-        json_rpc_client:batch(Client, Batch)
-    ).
-
-test_notification_batch(Config) ->
-    Client = ?config(client, Config),
-    Batch = [
-        {<<"notify_sum">>, [1, 2, 4], undefined},
-        {<<"notify_hello">>, [7], undefined}
-    ],
-    ?assertEqual(ok, json_rpc_client:batch(Client, Batch)).
-
-test_authentication(Config) ->
-    Client = ?config(client, Config),
-    AuthFun = fun
-        (#{<<"auth">> := <<"secret_token">>}) -> ok;
-        (_) -> error
-    end,
-    json_rpc_server:set_auth(AuthFun),
-
-    AuthClient = json_rpc_client:set_auth(Client, <<"secret_token">>),
-
-    ?assertEqual(
-        {error, #{<<"code">> => -32000, <<"message">> => <<"Authentication failed">>}, 1},
-        json_rpc_client:call(Client, <<"subtract">>, [42, 23], 1)
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 1},
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 1
+        })
     ),
-
     ?assertEqual(
-        {ok, 19, 2},
-        json_rpc_client:call(AuthClient, <<"subtract">>, [42, 23], 2)
-    ),
-
-    %% Reset auth so subsequent tests in the suite are unaffected.
-    json_rpc_server:set_auth(fun(_) -> ok end).
-
-%% Per spec, an explicit "id": null is a (discouraged but valid) call;
-%% the server must respond with id: null, NOT silently drop it as if it
-%% were a notification.
-test_explicit_null_id_is_call(Config) ->
-    Client = ?config(client, Config),
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
-    ?assertEqual(
-        {ok, 19, null},
-        json_rpc_client:raw_request(Client, Payload)
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => -19, <<"id">> => 2},
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [23, 42], id => 2
+        })
     ).
 
-%% A batch consisting entirely of notifications must produce no response
-%% on the wire. Use a fresh socket and a short recv timeout to assert
-%% that nothing comes back.
-test_all_notification_batch_no_response(_Config) ->
-    {ok, Socket} = gen_tcp:connect(?HOST, ?PORT, [binary, {packet, 0}, {active, false}]),
-    Payload =
-        <<"[",
-          "{\"jsonrpc\": \"2.0\", \"method\": \"notify_sum\", \"params\": [1,2,4]},",
-          "{\"jsonrpc\": \"2.0\", \"method\": \"notify_hello\", \"params\": [7]}",
-          "]">>,
-    ok = gen_tcp:send(Socket, Payload),
-    ?assertEqual({error, timeout}, gen_tcp:recv(Socket, 0, 200)),
-    gen_tcp:close(Socket).
+test_http_notification(Config) ->
+    Conn = ?config(conn, Config),
+    %% No id member -> notification -> 204 No Content, empty body.
+    Payload = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"update">>, params => [1, 2, 3]
+    }),
+    ?assertEqual({204, ignore, <<>>}, normalize(raw_post(Conn, Payload))).
 
-%% Method names beginning with "rpc." are reserved for rpc-internal use
-%% and must be rejected with -32601 Method not found when invoked from a
-%% client.
-test_reserved_method_name(Config) ->
-    Client = ?config(client, Config),
+test_http_method_not_found(Config) ->
+    Conn = ?config(conn, Config),
     ?assertEqual(
-        {error, #{<<"code">> => -32601, <<"message">> => <<"Method not found">>}, <<"r1">>},
-        json_rpc_client:call(Client, <<"rpc.foo">>, [], <<"r1">>)
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32601, <<"message">> => <<"Method not found">>},
+            <<"id">> => <<"1">>
+        },
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"foobar">>, params => [], id => <<"1">>
+        })
     ).
 
-%% "params", when present, must be an array or object. Anything else
-%% (here, a number) yields -32602 Invalid params.
-test_invalid_params_type(Config) ->
-    Client = ?config(client, Config),
+test_http_reserved_method_name(Config) ->
+    Conn = ?config(conn, Config),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32601, <<"message">> => <<"Method not found">>},
+            <<"id">> => <<"r1">>
+        },
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"rpc.foo">>, params => [], id => <<"r1">>
+        })
+    ).
+
+test_http_invalid_params_type(Config) ->
+    Conn = ?config(conn, Config),
+    %% "params": 42 is neither array nor object -> -32602.
     Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": 42, \"id\": \"p1\"}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
-        {error, #{<<"code">> => -32602, <<"message">> => <<"Invalid params">>}, <<"p1">>},
-        json_rpc_client:raw_request(Client, Payload)
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32602, <<"message">> => <<"Invalid params">>},
+            <<"id">> => <<"p1">>
+        },
+        jiffy:decode(Body, [return_maps])
     ).
 
-%% Handlers may surface application-level errors by throwing the
-%% structured tuple {jsonrpc_error, Code, Msg[, Data]}; the resulting
-%% error object must reach the client verbatim, including the Data field.
-test_handler_throws_jsonrpc_error(Config) ->
-    Client = ?config(client, Config),
+test_http_handler_throws_jsonrpc_error(Config) ->
+    Conn = ?config(conn, Config),
     ?assertEqual(
-        {error,
-            #{
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{
                 <<"code">> => -32602,
                 <<"message">> => <<"bad arg">>,
                 <<"data">> => #{<<"detail">> => <<"oops">>}
             },
-            <<"e1">>},
-        json_rpc_client:call(Client, <<"throw_error">>, [], <<"e1">>)
+            <<"id">> => <<"e1">>
+        },
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"throw_error">>, params => [], id => <<"e1">>
+        })
     ).
+
+test_http_explicit_null_id_is_call(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => null},
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_batch_mixed(Config) ->
+    Conn = ?config(conn, Config),
+    Batch = [
+        #{jsonrpc => <<"2.0">>, method => <<"sum">>, params => [1, 2, 4], id => <<"1">>},
+        #{jsonrpc => <<"2.0">>, method => <<"notify_hello">>, params => [7]},
+        #{jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => <<"2">>},
+        #{jsonrpc => <<"2.0">>, method => <<"foo">>, params => [], id => <<"9">>}
+    ],
+    Decoded = rpc_call(Conn, Batch),
+    ?assert(is_list(Decoded)),
+    Expected = [
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 7, <<"id">> => <<"1">>},
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => <<"2">>},
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32601, <<"message">> => <<"Method not found">>},
+            <<"id">> => <<"9">>
+        }
+    ],
+    ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
+
+test_http_all_notification_batch(Config) ->
+    Conn = ?config(conn, Config),
+    Batch = [
+        #{jsonrpc => <<"2.0">>, method => <<"notify_sum">>, params => [1, 2, 4]},
+        #{jsonrpc => <<"2.0">>, method => <<"notify_hello">>, params => [7]}
+    ],
+    Payload = jiffy:encode(Batch),
+    ?assertEqual({204, ignore, <<>>}, normalize(raw_post(Conn, Payload))).
+
+test_http_empty_batch(Config) ->
+    Conn = ?config(conn, Config),
+    {200, _Hs, Body} = raw_post(Conn, <<"[]">>),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_malformed_json(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"foo\", \"params\": \"bar\", \"baz]">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32700, <<"message">> => <<"Parse error">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_oversize_body(Config) ->
+    Conn = ?config(conn, Config),
+    %% Suite-level max_body_bytes is set to 4096; send 5 KiB of garbage.
+    Big = binary:copy(<<"x">>, 5120),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"x\", \"params\": [\"", Big/binary, "\"]}">>,
+    {Status, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(413, Status),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32700, <<"message">> => <<"Parse error">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_method_not_allowed(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = gun:get(Conn, "/rpc", []),
+    {response, fin, 405, Headers} = gun:await(Conn, StreamRef, 5000),
+    %% The handler must advertise POST.
+    Allow = proplists:get_value(<<"allow">>, Headers, undefined),
+    ?assertEqual(<<"POST">>, Allow).
+
+test_http_unsupported_media_type(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": 1}">>,
+    Headers = [{<<"content-type">>, <<"text/plain">>}],
+    {Status, _Hs, _Body} = raw_post(Conn, Payload, Headers),
+    ?assertEqual(415, Status).
+
+%%% WebSocket test cases
+
+test_ws_call(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 1},
+        jiffy:decode(RespBin, [return_maps])
+    ).
+
+test_ws_notification(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"update">>, params => [1, 2, 3]
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame}),
+    %% No frame back. Use a short await; expect timeout.
+    ?assertMatch({error, timeout}, gun:await(Conn, StreamRef, 300)).
+
+test_ws_batch(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Batch = [
+        #{jsonrpc => <<"2.0">>, method => <<"sum">>, params => [1, 2, 4], id => <<"1">>},
+        #{jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => <<"2">>}
+    ],
+    gun:ws_send(Conn, StreamRef, {text, jiffy:encode(Batch)}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    Decoded = jiffy:decode(RespBin, [return_maps]),
+    Expected = [
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 7, <<"id">> => <<"1">>},
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => <<"2">>}
+    ],
+    ?assertEqual(lists:sort(Expected), lists:sort(Decoded)).
+
+test_ws_malformed_json(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    gun:ws_send(Conn, StreamRef, {text, <<"{not valid json">>}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32700, <<"message">> => <<"Parse error">>},
+            <<"id">> => null
+        },
+        jiffy:decode(RespBin, [return_maps])
+    ).
+
+%%% WebSocket helpers
+
+ws_upgrade(Conn) ->
+    StreamRef = gun:ws_upgrade(Conn, "/ws"),
+    receive
+        {gun_upgrade, Conn, StreamRef, [<<"websocket">>], _Headers} ->
+            StreamRef;
+        {gun_response, Conn, StreamRef, _, Status, _Headers} ->
+            erlang:error({ws_upgrade_failed, Status});
+        {gun_error, Conn, StreamRef, Reason} ->
+            erlang:error({ws_upgrade_error, Reason})
+    after 5000 ->
+        erlang:error(ws_upgrade_timeout)
+    end.
+
+%% Drop the response Headers value when comparing — we only care about
+%% Status/Body for the cases that use this.
+normalize({Status, _Hs, Body}) -> {Status, ignore, Body}.

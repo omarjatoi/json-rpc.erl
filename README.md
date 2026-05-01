@@ -1,51 +1,103 @@
 # json-rpc
 
-[JSON-RPC-2.0](https://www.jsonrpc.org/specification) server and client implementation in Erlang.
+[JSON-RPC-2.0](https://www.jsonrpc.org/specification) server in Erlang, exposed
+over plain HTTP and WebSocket via [Cowboy](https://github.com/ninenines/cowboy).
+
+## Endpoints
+
+The application starts a single Cowboy listener with two routes:
+
+| Route          | Method | Purpose                              |
+|----------------|--------|--------------------------------------|
+| `POST /rpc`    | POST   | One-shot JSON-RPC call/notification/batch. |
+| `GET /ws`      | GET    | Persistent JSON-RPC channel over WebSocket text frames. |
+
+The HTTP transport answers with `200 OK` for any well-formed JSON-RPC payload —
+JSON-RPC errors live in the response body, not the HTTP status. The transport
+layer itself returns:
+
+- `204 No Content` for notifications and all-notification batches (no body).
+- `405 Method Not Allowed` (with `Allow: POST`) for non-`POST` requests to `/rpc`.
+- `413 Payload Too Large` (with a `-32700` JSON-RPC body) when the request body
+  exceeds `max_body_bytes`.
+- `415 Unsupported Media Type` when `Content-Type` is not `application/json`.
+
+The WebSocket endpoint accepts JSON-RPC payloads as text frames and responds
+with text frames (notifications produce no frame at all). Malformed JSON
+yields a `-32700` envelope as a text frame.
 
 ## Usage
 
-### Server
+### Register a method
 
 ```erlang
-% start the server at port 8000
-{ok, _} = json_rpc_server:start_link(8000).
-
-% register a method
-json_rpc_server:register_method(<<"some_method_name">>, fun module:some_method/1).
-
-% optionally set some authentication for the rpc
-json_rpc_server:set_auth(fun(Request) ->
-    case Request of
-        #{<<"auth">> := <<"secret_token">>} -> ok;
-        _ -> error
-    end
-end).
+ok = json_rpc_server:register_method(
+    <<"subtract">>,
+    fun([A, B]) -> A - B end
+).
 ```
 
-### Client
+Handlers are arity-1 functions. They may surface application-level errors by
+throwing the structured tuple `{jsonrpc_error, Code, Msg}` or
+`{jsonrpc_error, Code, Msg, Data}`; the values flow through to the JSON-RPC
+`error` object verbatim.
 
-```erlang
-% create a new client
-{ok, Client} = json_rpc_client:connect("localhost", 8000).
+### HTTP examples
 
-% if using an auth function, add auth token
-AuthenticatedClient = json_rpc_client:set_auth(Client, <<"secret_token">>).
+A call:
 
-% call "some_method_name" with params {"foo": 1, "bar": 2} and get result
-{ok, Result, Id} = json_rpc_client:call(AuthenticatedClient, <<"some_method_name">>, #{foo => 1, bar => 2}, 1).
-
-% call "log" with params {"message": "Hello, World!"}
-ok = json_rpc_client:notify(AuthenticatedClient, <<"log">>, #{message => "Hello, World!"}).
-
-% make some batched requests
-{ok, Results} = json_rpc_client:batch(AuthenticatedClient, [
-    {<<"some_method_name">>, #{foo => 1, bar => 2}, 1},
-    {<<"log">>, #{message => "Hello, World!"}, undefined}
-]).
-
-% close the client
-json_rpc_client:close(AuthenticatedClient).
+```sh
+curl -sS -X POST http://localhost:8080/rpc \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}'
+# -> {"jsonrpc":"2.0","result":19,"id":1}
 ```
+
+A notification (no `id` member, expect `204 No Content`):
+
+```sh
+curl -sS -i -X POST http://localhost:8080/rpc \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"update","params":[1,2,3]}'
+# -> HTTP/1.1 204 No Content
+```
+
+A batch (notifications inside a batch are silently dropped from the response
+array; an all-notification batch yields `204 No Content`):
+
+```sh
+curl -sS -X POST http://localhost:8080/rpc \
+    -H 'Content-Type: application/json' \
+    -d '[
+        {"jsonrpc":"2.0","method":"sum","params":[1,2,4],"id":"1"},
+        {"jsonrpc":"2.0","method":"notify_hello","params":[7]},
+        {"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":"2"}
+    ]'
+# -> [{"jsonrpc":"2.0","result":7,"id":"1"},
+#     {"jsonrpc":"2.0","result":19,"id":"2"}]
+```
+
+## Configuration
+
+Set these via `application:set_env/3` (or `sys.config`) before
+`application:ensure_all_started(json_rpc)`.
+
+| Key                | Default       | Meaning |
+|--------------------|---------------|---------|
+| `port`             | `8080`        | TCP port for the Cowboy listener. |
+| `max_body_bytes`   | `1_048_576`   | Per-request body cap. Overflow → `413` with a `-32700` body. |
+| `max_connections`  | `1_024`       | `ranch`'s `max_connections` for the listener. |
+| `num_acceptors`    | `100`         | Number of acceptor processes. |
+| `idle_timeout_ms`  | `60_000`      | Cowboy `idle_timeout` (applies to keep-alive HTTP and WebSocket). |
+
+## Securing your endpoint
+
+The library ships **no** authentication, no TLS listener, and no `Authorization`
+parsing of any kind. By design it expects to sit plaintext behind an L7 proxy
+(Envoy, nginx, HAProxy, …) that terminates TLS, enforces rate limits, and
+applies whatever auth scheme you use (mTLS, bearer tokens, OIDC, …). If you
+need to authenticate inside the BEAM, slot a Cowboy middleware in front of the
+two handlers; full recipes will land in a later phase.
 
 ## Development
 
