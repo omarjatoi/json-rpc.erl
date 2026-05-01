@@ -19,7 +19,7 @@
         {port, 8080},
         {max_body_bytes, 1048576},
         {max_connections, 1024},
-        {num_acceptors, 100},
+        {num_acceptors, 10},
         {idle_timeout_ms, 60000},
         {request_timeout_ms, 10000},
         {handler_timeout_ms, 10000},

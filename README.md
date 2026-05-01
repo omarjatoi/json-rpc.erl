@@ -88,7 +88,7 @@ Set these via `application:set_env/3` (or `sys.config`) before
 | `port`             | `8080`        | TCP port for the Cowboy listener. |
 | `max_body_bytes`   | `1_048_576`   | Per-request body cap. Overflow → `413` with a `-32700` body. |
 | `max_connections`  | `1_024`       | `ranch`'s `max_connections` for the listener. |
-| `num_acceptors`    | `100`         | Number of acceptor processes. |
+| `num_acceptors`    | `10`          | Number of acceptor processes. |
 | `idle_timeout_ms`  | `60_000`      | Cowboy `idle_timeout` (applies to keep-alive HTTP and WebSocket). |
 
 ## Securing your endpoint
