@@ -20,6 +20,19 @@
 
 -define(JSON_HEADERS, #{<<"content-type">> => <<"application/json">>}).
 
+%% Pre-encoded constant error envelopes. These are emitted before any
+%% parsing has happened (parse failure, oversize body), so there is no
+%% request id to echo and the body never varies. The exact byte sequence
+%% matches what `jiffy:encode/1' produces for the equivalent map; see
+%% `test_http_malformed_json' and `test_http_oversize_body' for the
+%% round-trip assertions.
+-define(PARSE_ERROR_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Parse error\",\"code\":-32700}}">>
+).
+-define(INVALID_REQUEST_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Invalid Request\",\"code\":-32600}}">>
+).
+
 init(Req0, State) ->
     try
         handle(Req0, State)
@@ -65,10 +78,7 @@ handle_json_post(Req0, State) ->
             %% The body was rejected at the size cap before any parsing, so
             %% -32700 Parse error is wrong. Use -32600 Invalid Request and
             %% keep the 413 status code.
-            Body = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32600, <<"Invalid Request">>)
-            ),
-            Req = cowboy_req:reply(413, ?JSON_HEADERS, Body, Req1),
+            Req = cowboy_req:reply(413, ?JSON_HEADERS, ?INVALID_REQUEST_BODY, Req1),
             {ok, Req, State}
     end.
 
@@ -118,10 +128,7 @@ handle_body(Body, Req0, State) ->
                     {ok, Req, State}
             end;
         {error, parse_error} ->
-            ErrBody = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32700, <<"Parse error">>)
-            ),
-            Req = cowboy_req:reply(200, ?JSON_HEADERS, ErrBody, Req0),
+            Req = cowboy_req:reply(200, ?JSON_HEADERS, ?PARSE_ERROR_BODY, Req0),
             {ok, Req, State}
     end.
 

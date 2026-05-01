@@ -18,6 +18,15 @@
 
 -export([init/2, websocket_init/1, websocket_handle/2, websocket_info/2, terminate/3]).
 
+%% Pre-encoded constant parse-error envelope. The WS endpoint emits this
+%% on any frame that fails JSON parsing; there is no request id to echo
+%% and the body never varies. The exact byte sequence matches what
+%% `jiffy:encode/1' produces for the equivalent map; see
+%% `test_ws_malformed_json' for the round-trip assertion.
+-define(PARSE_ERROR_BODY,
+    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Parse error\",\"code\":-32700}}">>
+).
+
 init(Req, State) ->
     %% Accept the upgrade regardless of what (if any) subprotocols the
     %% client offers. RFC 6455 lets the server simply not select one — by
@@ -66,10 +75,7 @@ websocket_handle({text, Frame}, State) ->
                     {[{text, ErrBody}], State}
             end;
         {error, parse_error} ->
-            ErrBody = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32700, <<"Parse error">>)
-            ),
-            {[{text, ErrBody}], State}
+            {[{text, ?PARSE_ERROR_BODY}], State}
     end;
 websocket_handle({binary, _Data}, State) ->
     %% JSON-RPC framing on WS is text-only. Close the connection with
