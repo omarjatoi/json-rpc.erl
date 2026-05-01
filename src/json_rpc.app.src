@@ -11,12 +11,12 @@
 % the License.
 
 {application, json_rpc, [
-    {description, "JSON-RPC 2.0 server and client implementation in Erlang"},
-    {vsn, "0.1.0"},
-    {registered, []},
-    {applications, [kernel, stdlib]},
+    {description, "JSON-RPC 2.0 server over HTTP and WebSocket in Erlang"},
+    {vsn, "0.2.0"},
+    {registered, [json_rpc_sup, json_rpc_server]},
+    {applications, [kernel, stdlib, cowboy, jiffy]},
     {env, []},
-    {modules, [json_rpc_server, json_rpc_client]},
+    {mod, {json_rpc_app, []}},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/omarjatoi/json-rpc"}]}
 ]}.
