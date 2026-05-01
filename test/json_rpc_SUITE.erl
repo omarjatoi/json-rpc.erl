@@ -32,6 +32,9 @@
     test_http_invalid_params_type/1,
     test_http_handler_throws_jsonrpc_error/1,
     test_http_explicit_null_id_is_call/1,
+    test_http_invalid_id_boolean/1,
+    test_http_invalid_id_array/1,
+    test_http_invalid_id_object/1,
     test_http_batch_mixed/1,
     test_http_all_notification_batch/1,
     test_http_empty_batch/1,
@@ -84,6 +87,9 @@ all() ->
         test_http_invalid_params_type,
         test_http_handler_throws_jsonrpc_error,
         test_http_explicit_null_id_is_call,
+        test_http_invalid_id_boolean,
+        test_http_invalid_id_array,
+        test_http_invalid_id_object,
         test_http_batch_mixed,
         test_http_all_notification_batch,
         test_http_empty_batch,
@@ -285,6 +291,46 @@ test_http_explicit_null_id_is_call(Config) ->
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => null},
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_boolean(Config) ->
+    Conn = ?config(conn, Config),
+    %% Per spec, id MUST be String, Number, or Null. Boolean is invalid.
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": true}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_array(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": [1,2]}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+test_http_invalid_id_object(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": {}}">>,
+    {200, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
+            <<"id">> => null
+        },
         jiffy:decode(Body, [return_maps])
     ).
 

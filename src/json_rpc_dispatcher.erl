@@ -16,7 +16,7 @@
 
 -export([dispatch/1, create_error_response/3, create_error_response/4]).
 
--type id() :: binary() | integer() | null.
+-type id() :: binary() | integer() | float() | null.
 -type reply() :: no_response | map() | [map()].
 
 -export_type([id/0, reply/0]).
@@ -49,12 +49,16 @@ process_request(_Request) ->
 process_single_request(
     #{<<"jsonrpc">> := <<"2.0">>, <<"method">> := Method} = Request
 ) when is_binary(Method), Method =/= <<>> ->
-    Id = extract_call_id(Request),
-    case validate_params(Request) of
-        {ok, Params} ->
-            dispatch_method(Method, Params, Id);
-        {error, Code, Msg} ->
-            response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+    case extract_call_id(Request) of
+        {error, invalid_id} ->
+            create_error_response(null, -32600, <<"Invalid Request">>);
+        Id ->
+            case validate_params(Request) of
+                {ok, Params} ->
+                    dispatch_method(Method, Params, Id);
+                {error, Code, Msg} ->
+                    response_or_drop(Id, create_error_response(call_id(Id), Code, Msg))
+            end
     end;
 process_single_request(_) ->
     create_error_response(null, -32600, <<"Invalid Request">>).
@@ -71,11 +75,16 @@ validate_params(Request) ->
 
 %% Returns the id for a call/notification:
 %%   - missing key: notification (encoded internally as the atom 'notification')
-%%   - present (including null): call; return the id value verbatim
+%%   - present and one of String/Number/Null per spec: return verbatim
+%%   - present but any other JSON type (boolean, array, object): {error, invalid_id}
 extract_call_id(Request) ->
     case maps:find(<<"id">>, Request) of
         error -> notification;
-        {ok, Id} -> Id
+        {ok, null} -> null;
+        {ok, Id} when is_binary(Id) -> Id;
+        {ok, Id} when is_integer(Id) -> Id;
+        {ok, Id} when is_float(Id) -> Id;
+        {ok, _} -> {error, invalid_id}
     end.
 
 dispatch_method(Method, Params, Id) ->
