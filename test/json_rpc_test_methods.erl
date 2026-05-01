@@ -21,7 +21,8 @@
     notify_hello/1,
     throw_error/1,
     throw_reserved_error/1,
-    slow/1
+    slow/1,
+    crash/1
 ]).
 
 subtract([A, B]) -> A - B.
@@ -48,3 +49,9 @@ throw_reserved_error(_) ->
 slow([Ms]) when is_integer(Ms), Ms >= 0 ->
     timer:sleep(Ms),
     <<"done">>.
+
+%% Crashes the worker process so the dispatcher's surrounding try/catch
+%% doesn't get a chance to convert the exception. Used to verify that the
+%% per-request worker isolates crashes from the connection process.
+crash(_) ->
+    exit(boom).

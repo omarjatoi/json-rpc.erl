@@ -42,7 +42,9 @@
     test_http_malformed_json/1,
     test_http_oversize_body/1,
     test_http_method_not_allowed/1,
-    test_http_unsupported_media_type/1
+    test_http_unsupported_media_type/1,
+    test_http_handler_timeout/1,
+    test_http_handler_crash_isolation/1
 ]).
 
 %% WebSocket test cases.
@@ -50,7 +52,9 @@
     test_ws_call/1,
     test_ws_notification/1,
     test_ws_batch/1,
-    test_ws_malformed_json/1
+    test_ws_malformed_json/1,
+    test_ws_handler_timeout/1,
+    test_ws_handler_crash_isolation/1
 ]).
 
 %% Registry test cases.
@@ -99,10 +103,14 @@ all() ->
         test_http_oversize_body,
         test_http_method_not_allowed,
         test_http_unsupported_media_type,
+        test_http_handler_timeout,
+        test_http_handler_crash_isolation,
         test_ws_call,
         test_ws_notification,
         test_ws_batch,
         test_ws_malformed_json,
+        test_ws_handler_timeout,
+        test_ws_handler_crash_isolation,
         test_rpc_discover,
         test_register_rpc_reserved,
         test_register_invalid_handler,
@@ -129,10 +137,11 @@ end_per_suite(_Config) ->
     ok = application:stop(json_rpc),
     ok.
 
-init_per_testcase(TestCase, Config) ->
+init_per_testcase(TestCase, Config0) ->
+    Config1 = maybe_lower_timeout(TestCase, Config0),
     case needs_conn(TestCase) of
         false ->
-            Config;
+            Config1;
         true ->
             {ok, ConnPid} = gun:open(?HOST, ?PORT, #{
                 transport => tcp,
@@ -140,7 +149,7 @@ init_per_testcase(TestCase, Config) ->
                 retry => 0
             }),
             {ok, http} = gun:await_up(ConnPid, 5000),
-            [{conn, ConnPid} | Config]
+            [{conn, ConnPid} | Config1]
     end.
 
 end_per_testcase(_TestCase, Config) ->
@@ -148,7 +157,33 @@ end_per_testcase(_TestCase, Config) ->
         undefined -> ok;
         ConnPid -> gun:close(ConnPid)
     end,
+    case ?config(saved_request_timeout_ms, Config) of
+        undefined ->
+            ok;
+        {ok, Prev} ->
+            application:set_env(json_rpc, request_timeout_ms, Prev);
+        unset ->
+            application:unset_env(json_rpc, request_timeout_ms)
+    end,
     ok.
+
+%% The handler-timeout cases need a small request_timeout_ms so the test
+%% can sleep past it without slowing the suite. Save and restore the
+%% original value so test_app_drain (which uses the slow handler at 800ms)
+%% and other tests aren't affected.
+maybe_lower_timeout(TestCase, Config) when
+    TestCase =:= test_http_handler_timeout;
+    TestCase =:= test_ws_handler_timeout
+->
+    Saved =
+        case application:get_env(json_rpc, request_timeout_ms) of
+            {ok, V} -> {ok, V};
+            undefined -> unset
+        end,
+    application:set_env(json_rpc, request_timeout_ms, 200),
+    [{saved_request_timeout_ms, Saved} | Config];
+maybe_lower_timeout(_TestCase, Config) ->
+    Config.
 
 %% Test cases that don't open a gun connection in init_per_testcase. The
 %% lifecycle test owns the application start/stop itself; the registry
@@ -171,7 +206,8 @@ register_methods() ->
         {<<"notify_hello">>, {json_rpc_test_methods, notify_hello}},
         {<<"throw_error">>, {json_rpc_test_methods, throw_error}},
         {<<"throw_reserved_error">>, {json_rpc_test_methods, throw_reserved_error}},
-        {<<"slow">>, {json_rpc_test_methods, slow}}
+        {<<"slow">>, {json_rpc_test_methods, slow}},
+        {<<"crash">>, {json_rpc_test_methods, crash}}
     ],
     lists:foreach(
         fun({Name, Handler}) -> ok = json_rpc_methods:register_method(Name, Handler) end,
@@ -442,6 +478,53 @@ test_http_unsupported_media_type(Config) ->
     {Status, _Hs, _Body} = raw_post(Conn, Payload, Headers),
     ?assertEqual(415, Status).
 
+%% A handler that sleeps past request_timeout_ms (lowered to 200ms in
+%% init_per_testcase) must produce -32603 with data.reason = timeout, and
+%% the HTTP status must remain 200.
+test_http_handler_timeout(Config) ->
+    Conn = ?config(conn, Config),
+    Payload = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"slow">>, params => [1000], id => 7
+    }),
+    {Status, _Hs, Body} = raw_post(Conn, Payload),
+    ?assertEqual(200, Status),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{
+                <<"code">> => -32603,
+                <<"message">> => <<"Internal error">>,
+                <<"data">> => #{<<"reason">> => <<"timeout">>}
+            },
+            <<"id">> => 7
+        },
+        jiffy:decode(Body, [return_maps])
+    ).
+
+%% A handler that crashes must yield a -32603 reply, and the HTTP keepalive
+%% connection must stay healthy enough for an immediate follow-up call to
+%% succeed on the same gun pid.
+test_http_handler_crash_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    Reply1 = rpc_call(Conn, #{
+        jsonrpc => <<"2.0">>, method => <<"crash">>, params => [], id => 1
+    }),
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := 1
+        },
+        Reply1
+    ),
+    %% Same connection, immediately, must work.
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        rpc_call(Conn, #{
+            jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+        })
+    ).
+
 %%% WebSocket test cases
 
 test_ws_call(Config) ->
@@ -497,6 +580,58 @@ test_ws_malformed_json(Config) ->
         jiffy:decode(RespBin, [return_maps])
     ).
 
+%% Same idea as test_http_handler_timeout but over WS. The WS handler emits
+%% a -32603 envelope with id: null on timeout (the spec doesn't guarantee
+%% we can extract the id from arbitrary parsed payloads cheaply).
+test_ws_handler_timeout(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"slow">>, params => [1000], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame}),
+    {ws, {text, RespBin}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{
+            <<"jsonrpc">> => <<"2.0">>,
+            <<"error">> => #{
+                <<"code">> => -32603,
+                <<"message">> => <<"Internal error">>,
+                <<"data">> => #{<<"reason">> => <<"timeout">>}
+            },
+            <<"id">> => null
+        },
+        jiffy:decode(RespBin, [return_maps])
+    ).
+
+%% A crashing handler must yield -32603 and leave the WS stream healthy
+%% enough to handle the very next frame.
+test_ws_handler_crash_isolation(Config) ->
+    Conn = ?config(conn, Config),
+    StreamRef = ws_upgrade(Conn),
+    Frame1 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"crash">>, params => [], id => 1
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame1}),
+    {ws, {text, RespBin1}} = gun:await(Conn, StreamRef, 5000),
+    ?assertMatch(
+        #{
+            <<"jsonrpc">> := <<"2.0">>,
+            <<"error">> := #{<<"code">> := -32603, <<"message">> := <<"Internal error">>},
+            <<"id">> := 1
+        },
+        jiffy:decode(RespBin1, [return_maps])
+    ),
+    Frame2 = jiffy:encode(#{
+        jsonrpc => <<"2.0">>, method => <<"subtract">>, params => [42, 23], id => 2
+    }),
+    gun:ws_send(Conn, StreamRef, {text, Frame2}),
+    {ws, {text, RespBin2}} = gun:await(Conn, StreamRef, 5000),
+    ?assertEqual(
+        #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => 2},
+        jiffy:decode(RespBin2, [return_maps])
+    ).
+
 %%% WebSocket helpers
 
 ws_upgrade(Conn) ->
@@ -529,7 +664,8 @@ test_rpc_discover(Config) ->
     Required = [
         <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
         <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
-        <<"throw_reserved_error">>, <<"slow">>, <<"rpc.discover">>
+        <<"throw_reserved_error">>, <<"slow">>, <<"crash">>,
+        <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,
