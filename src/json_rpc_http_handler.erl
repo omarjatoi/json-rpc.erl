@@ -63,8 +63,11 @@ handle_json_post(Req0, State) ->
         {ok, Body, Req1} ->
             handle_body(Body, Req1, State);
         {too_large, Req1} ->
+            %% The body was rejected at the size cap before any parsing, so
+            %% -32700 Parse error is wrong. Use -32600 Invalid Request and
+            %% keep the 413 status code.
             Body = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32700, <<"Parse error">>)
+                json_rpc_dispatcher:create_error_response(null, -32600, <<"Invalid Request">>)
             ),
             Req = cowboy_req:reply(413, ?JSON_HEADERS, Body, Req1),
             {ok, Req, State}

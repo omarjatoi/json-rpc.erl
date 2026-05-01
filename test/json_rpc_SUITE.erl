@@ -399,7 +399,7 @@ test_http_oversize_body(Config) ->
     ?assertEqual(
         #{
             <<"jsonrpc">> => <<"2.0">>,
-            <<"error">> => #{<<"code">> => -32700, <<"message">> => <<"Parse error">>},
+            <<"error">> => #{<<"code">> => -32600, <<"message">> => <<"Invalid Request">>},
             <<"id">> => null
         },
         jiffy:decode(Body, [return_maps])
