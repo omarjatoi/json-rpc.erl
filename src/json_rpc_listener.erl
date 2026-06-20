@@ -114,7 +114,8 @@ wait_drain(Deadline) ->
             ok;
         _Pids ->
             case erlang:monotonic_time(millisecond) >= Deadline of
-                true -> ok;
+                true ->
+                    ok;
                 false ->
                     timer:sleep(50),
                     wait_drain(Deadline)

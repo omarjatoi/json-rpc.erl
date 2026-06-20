@@ -344,7 +344,8 @@ test_http_reserved_method_name(Config) ->
 test_http_invalid_params_type(Config) ->
     Conn = ?config(conn, Config),
     %% "params": 42 is neither array nor object -> -32602.
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": 42, \"id\": \"p1\"}">>,
+    Payload =
+        <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": 42, \"id\": \"p1\"}">>,
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{
@@ -386,14 +387,17 @@ test_http_handler_throws_reserved_error(Config) ->
             <<"id">> => <<"r2">>
         },
         rpc_call(Conn, #{
-            jsonrpc => <<"2.0">>, method => <<"throw_reserved_error">>,
-            params => [], id => <<"r2">>
+            jsonrpc => <<"2.0">>,
+            method => <<"throw_reserved_error">>,
+            params => [],
+            id => <<"r2">>
         })
     ).
 
 test_http_explicit_null_id_is_call(Config) ->
     Conn = ?config(conn, Config),
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
+    Payload =
+        <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": null}">>,
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => 19, <<"id">> => null},
@@ -403,7 +407,8 @@ test_http_explicit_null_id_is_call(Config) ->
 test_http_invalid_id_boolean(Config) ->
     Conn = ?config(conn, Config),
     %% Per spec, id MUST be String, Number, or Null. Boolean is invalid.
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": true}">>,
+    Payload =
+        <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": true}">>,
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{
@@ -416,7 +421,8 @@ test_http_invalid_id_boolean(Config) ->
 
 test_http_invalid_id_array(Config) ->
     Conn = ?config(conn, Config),
-    Payload = <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": [1,2]}">>,
+    Payload =
+        <<"{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [1,2], \"id\": [1,2]}">>,
     {200, _Hs, Body} = raw_post(Conn, Payload),
     ?assertEqual(
         #{
@@ -947,7 +953,8 @@ ws_handler_pids(N, 0) ->
 ws_handler_pids(N, Tries) ->
     Pids = ranch:procs(json_rpc_listener, connections),
     case length(Pids) =:= N of
-        true -> lists:sort(Pids);
+        true ->
+            lists:sort(Pids);
         false ->
             timer:sleep(20),
             ws_handler_pids(N, Tries - 1)
@@ -957,7 +964,8 @@ wait_for_pg_cleanup(_Group, Budget) when Budget =< 0 ->
     erlang:error(pg_cleanup_timeout);
 wait_for_pg_cleanup(Group, Budget) ->
     case pg:get_members(json_rpc, Group) of
-        [] -> ok;
+        [] ->
+            ok;
         _ ->
             timer:sleep(50),
             wait_for_pg_cleanup(Group, Budget - 50)
@@ -1027,10 +1035,18 @@ test_rpc_discover(Config) ->
     %% rpc.discover itself must be present. Any additional methods that
     %% other tests register transiently shouldn't break this.
     Required = [
-        <<"subtract">>, <<"sum">>, <<"get_data">>, <<"update">>,
-        <<"notify_sum">>, <<"notify_hello">>, <<"throw_error">>,
-        <<"throw_reserved_error">>, <<"slow">>, <<"crash">>,
-        <<"crash_exit">>, <<"rpc.discover">>
+        <<"subtract">>,
+        <<"sum">>,
+        <<"get_data">>,
+        <<"update">>,
+        <<"notify_sum">>,
+        <<"notify_hello">>,
+        <<"throw_error">>,
+        <<"throw_reserved_error">>,
+        <<"slow">>,
+        <<"crash">>,
+        <<"crash_exit">>,
+        <<"rpc.discover">>
     ],
     lists:foreach(
         fun(M) -> ?assert(lists:member(M, Methods)) end,

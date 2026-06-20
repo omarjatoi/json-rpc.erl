@@ -113,7 +113,9 @@ extract_call_id(Request) ->
 dispatch_method(Method, Params, Id) ->
     case json_rpc_methods:lookup(Method) of
         not_found ->
-            response_or_drop(Id, create_error_response(call_id(Id), -32601, <<"Method not found">>));
+            response_or_drop(
+                Id, create_error_response(call_id(Id), -32601, <<"Method not found">>)
+            );
         {ok, {mfa, M, F}} ->
             invoke(fun() -> apply(M, F, [Params]) end, Id)
     end.
