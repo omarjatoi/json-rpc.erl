@@ -63,6 +63,10 @@ init(Req, _State) ->
         idle_timeout => json_rpc_config:get(ws_idle_timeout_ms),
         compress => false
     },
+    %% `connection_pid' is deliberately not set here. This callback runs in
+    %% Cowboy's request process, which is handed off and discarded once the
+    %% upgrade completes; the WebSocket loop runs in the connection process.
+    %% Capturing self() here would put a dead pid in every handler context.
     State = #{
         max_in_flight => json_rpc_config:get(ws_max_in_flight),
         in_flight => #{},
@@ -71,7 +75,6 @@ init(Req, _State) ->
             request_id => json_rpc_transport:request_id(
                 cowboy_req:header(<<"x-request-id">>, Req)
             ),
-            connection_pid => self(),
             peer => cowboy_req:peer(Req)
         }
     },
@@ -80,12 +83,12 @@ init(Req, _State) ->
 -doc false.
 -spec websocket_init(map()) -> {cowboy_websocket:commands(), map()}.
 websocket_init(#{context := Context} = State) ->
-    %% Join the drain group so the listener can ask every connection to close
-    %% at shutdown. `pg' monitors members and drops them on exit, so there is
-    %% nothing to undo in terminate/3.
+    %% This runs in the connection process, so this is where the pid handlers
+    %% are given — the one json_rpc_ws:push/3 and subscribe/2 expect — is
+    %% finally known.
     ok = pg:join(json_rpc, ?DRAIN_GROUP, self()),
     json_rpc_telemetry:ws_connection_open(maps:get(peer, Context, undefined)),
-    {[], State}.
+    {[], State#{context := Context#{connection_pid => self()}}}.
 
 -doc false.
 -spec websocket_handle({text | binary | ping | pong, binary()}, map()) ->

@@ -19,14 +19,24 @@ Attach with `telemetry:attach/4` or `telemetry:attach_many/4`. Durations are
 in **microseconds** — unlike the `telemetry` convention of native units,
 because everything measured here is already sampled in microseconds.
 
-| Event | Measurements | Metadata |
-| --- | --- | --- |
-| `[json_rpc, request, stop]` | `duration` | `method`, `transport`, `request_id`, `outcome`, `error_code` |
-| `[json_rpc, request, exception]` | `duration` | `method`, `transport`, `request_id`, `kind`, `reason` |
-| `[json_rpc, batch, stop]` | `duration`, `size` | `transport`, `request_id` |
-| `[json_rpc, parse_error]` | `count` | `transport` |
-| `[json_rpc, ws, connection, open]` | `count` | `peer` |
-| `[json_rpc, ws, connection, close]` | `count` | `reason` |
+`[json_rpc, request, stop]`
+: Measures `duration`. Metadata: `method`, `transport`, `request_id`,
+  `outcome`, `error_code`.
+
+`[json_rpc, request, exception]`
+: Measures `duration`. Metadata: `method`, `transport`, `request_id`, `kind`.
+
+`[json_rpc, batch, stop]`
+: Measures `duration` and `size`. Metadata: `transport`, `request_id`.
+
+`[json_rpc, parse_error]`
+: Measures `count`. Metadata: `transport`.
+
+`[json_rpc, ws, connection, open]`
+: Measures `count`. Metadata: `peer`.
+
+`[json_rpc, ws, connection, close]`
+: Measures `count`. Metadata: `reason`.
 
 `outcome` is `ok` or `error`; `error_code` is the JSON-RPC code on an error
 and `undefined` on success. `kind` is `timeout` or `crash`. A request that
@@ -48,7 +58,7 @@ ten `request` events and one `batch` event.
 -type transport() :: http | websocket | internal.
 -type duration() :: non_neg_integer().
 
--export_type([transport/0]).
+-export_type([transport/0, duration/0]).
 
 -doc "A method call completed, successfully or with a JSON-RPC error.".
 -spec request_stop(

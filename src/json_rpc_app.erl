@@ -28,8 +28,16 @@ strangely.
 -doc false.
 -spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
 start(_StartType, _StartArgs) ->
-    ok = json_rpc_config:validate_all(),
-    json_rpc_sup:start_link().
+    %% Returned rather than raised: a start callback that returns
+    %% `{error, Reason}' produces a clean `{error, {invalid_config, ...}}'
+    %% from application:start/1, instead of burying the offending key inside
+    %% a bad_return wrapper around an EXIT and a stacktrace.
+    try json_rpc_config:validate_all() of
+        ok -> json_rpc_sup:start_link()
+    catch
+        error:{invalid_config, _Key, _Value, _Reason} = Invalid ->
+            {error, Invalid}
+    end.
 
 -doc false.
 -spec stop(term()) -> ok.

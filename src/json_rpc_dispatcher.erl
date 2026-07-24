@@ -77,10 +77,20 @@ expect, which is how a handler talks back to its own connection.
 
 -export_type([context/0, reply/0]).
 
--doc "Dispatch with an empty context. Handlers registered at arity 2 see `#{}`.".
+-doc """
+Dispatch outside any transport.
+
+Handlers registered at arity 2 see a context whose `transport` is `internal`
+and whose `connection_pid` is the calling process.
+""".
 -spec dispatch(json_rpc_json:value()) -> reply().
 dispatch(Payload) ->
-    dispatch(Payload, #{}).
+    dispatch(Payload, #{
+        transport => internal,
+        request_id => undefined,
+        connection_pid => self(),
+        peer => undefined
+    }).
 
 -doc "Dispatch `Payload`, passing `Context` to any arity-2 handler it reaches.".
 -spec dispatch(json_rpc_json:value(), map()) -> reply().
