@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "f937b802ddf1",
+  "strategy": "manual-commit",
+  "branch": "production-readiness",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "test/json_rpc_protocol_SUITE.erl",
+    "test/json_rpc_test_methods.erl"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f9/37b802ddf1/0/metadata.json",
+      "transcript": "/f9/37b802ddf1/0/full.jsonl",
+      "content_hash": "/f9/37b802ddf1/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
