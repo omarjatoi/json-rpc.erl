@@ -13,6 +13,7 @@
     {
       "metadata": "/f9/37b802ddf1/0/metadata.json",
       "transcript": "/f9/37b802ddf1/0/full.jsonl",
+      "compact_transcript": "/f9/37b802ddf1/0/transcript.jsonl",
       "content_hash": "/f9/37b802ddf1/0/content_hash.txt",
       "prompt": ""
     }
