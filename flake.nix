@@ -17,8 +17,8 @@
       {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            beam28Packages.erlang
-            beam28Packages.rebar3
+            beam29Packages.erlang
+            beam29Packages.rebar3
             erlang-language-platform
             erlfmt
           ];

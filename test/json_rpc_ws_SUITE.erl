@@ -244,8 +244,10 @@ in_flight_cap_sheds_load(Config) ->
         Shed = [R || #{<<"error">> := #{<<"code">> := -32000}} = R <- Replies],
         Served = [R || #{<<"result">> := _} = R <- Replies],
         ?assertEqual(5, length(Shed) + length(Served)),
-        ?assert(length(Shed) >= 1),
-        ?assert(length(Served) >= 1)
+        %% Some are shed and some are served; the exact split depends on
+        %% scheduling, so assert only that both happened.
+        ?assertMatch([_ | _], Shed),
+        ?assertMatch([_ | _], Served)
     end).
 
 context_reports_websocket_transport(Config) ->
