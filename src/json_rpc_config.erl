@@ -12,15 +12,31 @@
 
 -module(json_rpc_config).
 
-%% Thin synchronous accessor for the json_rpc application's environment.
-%% No process; just reads `application:get_env/2' and validates each value
-%% against its expected type and constraints. Defaults live in the app
-%% file (`json_rpc.app.src') under the `env' key.
+-moduledoc """
+Validated access to the `json_rpc` application environment.
 
--export([get/1, validate_all/0]).
+There is no process here: every read goes through `application:get_env/2`
+and is checked against the key's declared shape. Defaults live in the `env`
+block of `json_rpc.app.src`, so `get/1` never has to invent one — an
+unknown key is a programming error and raises `badarg`.
 
+`validate_all/0` runs at application start so a misconfigured node fails
+immediately, with the offending key named, instead of crashing a listener
+later with something less actionable.
+
+Reads are cheap but not free. Transport handlers snapshot the values they
+need once at connection setup rather than calling `get/1` per request.
+""".
+
+-compile({no_auto_import, [get/1]}).
+
+-export([get/1, keys/0, validate_all/0]).
+
+-doc "Every configuration key understood by the application.".
 -type key() ::
     port
+    | http_path
+    | ws_path
     | max_body_bytes
     | max_connections
     | num_acceptors
@@ -28,30 +44,27 @@
     | request_timeout_ms
     | handler_timeout_ms
     | drain_timeout_ms
+    | max_keepalive_requests
     | max_methods
+    | max_batch_size
     | ws_max_frame_bytes
-    | ws_idle_timeout_ms.
+    | ws_idle_timeout_ms
+    | ws_max_in_flight
+    | methods.
 
 -export_type([key/0]).
 
-%% @doc Fetch a validated config value. Raises `error(badarg)' if the key is
-%% unknown to the application env (i.e. has no default).
--spec get(key()) -> term().
-get(Key) ->
-    case application:get_env(json_rpc, Key) of
-        {ok, Value} ->
-            validate(Key, Value);
-        undefined ->
-            erlang:error(badarg, [Key])
-    end.
+%% Declared shape of each key. `{integer, Min, Max}' bounds are inclusive.
+-define(POS_INT, {integer, 1, infinity}).
+-define(NON_NEG_INT, {integer, 0, infinity}).
 
-%% @doc Walk every known key, validating each. Returns `ok' or raises with
-%% `{invalid_config, Key, Value, Reason}'. Call this before starting the
-%% supervisor so misconfiguration fails fast with a clear error.
--spec validate_all() -> ok.
-validate_all() ->
-    Keys = [
+-doc "The list of keys `validate_all/0` walks. Ordered for readable errors.".
+-spec keys() -> [key()].
+keys() ->
+    [
         port,
+        http_path,
+        ws_path,
         max_body_bytes,
         max_connections,
         num_acceptors,
@@ -59,61 +72,101 @@ validate_all() ->
         request_timeout_ms,
         handler_timeout_ms,
         drain_timeout_ms,
+        max_keepalive_requests,
         max_methods,
+        max_batch_size,
         ws_max_frame_bytes,
-        ws_idle_timeout_ms
-    ],
-    lists:foreach(fun(K) -> _ = ?MODULE:get(K) end, Keys),
+        ws_idle_timeout_ms,
+        ws_max_in_flight,
+        methods
+    ].
+
+-doc """
+Fetch a validated configuration value.
+
+Raises `badarg` for a key the application does not define, and
+`{invalid_config, Key, Value, Reason}` for a defined key holding a value
+that fails validation.
+""".
+-spec get(key()) -> term().
+get(Key) ->
+    case application:get_env(json_rpc, Key) of
+        {ok, Value} -> validate(Key, Value);
+        undefined -> erlang:error(badarg, [Key])
+    end.
+
+-doc """
+Validate every key, raising on the first bad one.
+
+Called from `json_rpc_app:start/2` so misconfiguration fails the application
+start rather than a request.
+""".
+-spec validate_all() -> ok.
+validate_all() ->
+    lists:foreach(fun(Key) -> _ = get(Key) end, keys()),
     ok.
 
-%% Internal
+%%% Internal
 
-validate(port, V) when is_integer(V), V >= 1, V =< 65535 ->
-    V;
-validate(port, V) ->
-    bad(port, V, <<"must be an integer in 1..65535">>);
-validate(max_body_bytes, V) when is_integer(V), V > 0 ->
-    V;
-validate(max_body_bytes, V) ->
-    bad(max_body_bytes, V, <<"must be a positive integer">>);
-validate(max_connections, V) when is_integer(V), V > 0 ->
-    V;
-validate(max_connections, V) ->
-    bad(max_connections, V, <<"must be a positive integer">>);
-validate(num_acceptors, V) when is_integer(V), V > 0 ->
-    V;
-validate(num_acceptors, V) ->
-    bad(num_acceptors, V, <<"must be a positive integer">>);
-validate(idle_timeout_ms, V) when is_integer(V), V > 0 ->
-    V;
-validate(idle_timeout_ms, V) ->
-    bad(idle_timeout_ms, V, <<"must be a positive integer">>);
-validate(request_timeout_ms, V) when is_integer(V), V > 0 ->
-    V;
-validate(request_timeout_ms, V) ->
-    bad(request_timeout_ms, V, <<"must be a positive integer">>);
-validate(handler_timeout_ms, V) when is_integer(V), V > 0 ->
-    V;
-validate(handler_timeout_ms, V) ->
-    bad(handler_timeout_ms, V, <<"must be a positive integer">>);
-validate(drain_timeout_ms, V) when is_integer(V), V >= 0 ->
-    V;
-validate(drain_timeout_ms, V) ->
-    bad(drain_timeout_ms, V, <<"must be a non-negative integer">>);
-validate(max_methods, V) when is_integer(V), V > 0 ->
-    V;
-validate(max_methods, V) ->
-    bad(max_methods, V, <<"must be a positive integer">>);
-validate(ws_max_frame_bytes, V) when is_integer(V), V > 0 ->
-    V;
-validate(ws_max_frame_bytes, V) ->
-    bad(ws_max_frame_bytes, V, <<"must be a positive integer">>);
-validate(ws_idle_timeout_ms, V) when is_integer(V), V > 0 ->
-    V;
-validate(ws_idle_timeout_ms, V) ->
-    bad(ws_idle_timeout_ms, V, <<"must be a positive integer">>);
-validate(Key, _V) ->
-    erlang:error(badarg, [Key]).
+%% The declared shape of each key, in one place so adding a knob is a
+%% one-line change here plus a default in json_rpc.app.src.
+shape(port) -> {integer, 1, 65535};
+shape(http_path) -> path;
+shape(ws_path) -> path;
+shape(max_body_bytes) -> ?POS_INT;
+shape(max_connections) -> ?POS_INT;
+shape(num_acceptors) -> ?POS_INT;
+shape(idle_timeout_ms) -> ?POS_INT;
+shape(request_timeout_ms) -> ?POS_INT;
+shape(handler_timeout_ms) -> ?POS_INT;
+shape(drain_timeout_ms) -> ?NON_NEG_INT;
+shape(max_keepalive_requests) -> ?POS_INT;
+shape(max_methods) -> ?POS_INT;
+shape(max_batch_size) -> ?POS_INT;
+shape(ws_max_frame_bytes) -> ?POS_INT;
+shape(ws_idle_timeout_ms) -> ?POS_INT;
+shape(ws_max_in_flight) -> ?POS_INT;
+shape(methods) -> method_list;
+shape(_Other) -> unknown.
+
+validate(Key, Value) ->
+    case shape(Key) of
+        unknown -> erlang:error(badarg, [Key]);
+        Shape -> check(Shape, Key, Value)
+    end.
+
+check({integer, Min, Max}, Key, Value) when is_integer(Value) ->
+    case Value >= Min andalso (Max =:= infinity orelse Value =< Max) of
+        true -> Value;
+        false -> bad(Key, Value, range_message(Min, Max))
+    end;
+check({integer, Min, Max}, Key, Value) ->
+    bad(Key, Value, range_message(Min, Max));
+%% Cowboy's router wants a string path; accept only absolute ones so a typo
+%% shows up at boot instead of as a silent 404.
+check(path, _Key, [$/ | _] = Value) ->
+    Value;
+check(path, Key, Value) ->
+    bad(Key, Value, <<"must be an absolute path string, e.g. \"/rpc\"">>);
+check(method_list, Key, Value) when is_list(Value) ->
+    case lists:all(fun is_method_spec/1, Value) of
+        true -> Value;
+        false -> bad(Key, Value, <<"must be a list of {Name :: binary(), {Module, Function}}">>)
+    end;
+check(method_list, Key, Value) ->
+    bad(Key, Value, <<"must be a list of {Name :: binary(), {Module, Function}}">>).
+
+is_method_spec({Name, {Module, Function}}) when
+    is_binary(Name), is_atom(Module), is_atom(Function)
+->
+    true;
+is_method_spec(_Other) ->
+    false.
+
+range_message(Min, infinity) ->
+    iolist_to_binary(io_lib:format("must be an integer >= ~p", [Min]));
+range_message(Min, Max) ->
+    iolist_to_binary(io_lib:format("must be an integer in ~p..~p", [Min, Max])).
 
 -spec bad(key(), term(), binary()) -> no_return().
 bad(Key, Value, Reason) ->

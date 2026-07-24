@@ -12,149 +12,163 @@
 
 -module(json_rpc_http_handler).
 
+-moduledoc """
+`POST` endpoint for one-shot JSON-RPC calls, notifications, and batches.
+
+A well-formed payload always answers `200 OK` with the JSON-RPC Response in
+the body — protocol errors live in the body, not in the HTTP status, because
+a `-32601` is a successful HTTP exchange that carries an application-level
+failure.
+
+The status codes that are *not* `200` all concern the HTTP request itself:
+
+| Status | When |
+| --- | --- |
+| `204 No Content` | Notification, or a batch of nothing but Notifications |
+| `405 Method Not Allowed` | Anything other than `POST` |
+| `413 Content Too Large` | Body exceeded `max_body_bytes` |
+| `415 Unsupported Media Type` | `Content-Type` was not `application/json` |
+| `500 Internal Server Error` | A bug in this handler |
+
+Every one of them carries a JSON-RPC error envelope as the body, so a client
+can parse the response the same way whatever went wrong.
+""".
+
 -behaviour(cowboy_handler).
 
 -include_lib("kernel/include/logger.hrl").
+
+-include("json_rpc.hrl").
 
 -export([init/2]).
 
 -define(JSON_HEADERS, #{<<"content-type">> => <<"application/json">>}).
 
-%% Pre-encoded constant error envelopes. These are emitted before any
-%% parsing has happened (parse failure, oversize body), so there is no
-%% request id to echo and the body never varies. The exact byte sequence
-%% matches what `jiffy:encode/1' produces for the equivalent map; see
-%% `test_http_malformed_json' and `test_http_oversize_body' for the
-%% round-trip assertions.
--define(PARSE_ERROR_BODY,
-    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Parse error\",\"code\":-32700}}">>
-).
--define(INVALID_REQUEST_BODY,
-    <<"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"message\":\"Invalid Request\",\"code\":-32600}}">>
-).
-
-init(Req0, State0) ->
-    %% Snapshot per-request config once at handler entry so the hot path
-    %% in handle_body/3 doesn't repeatedly call `application:get_env' +
-    %% the validator on every request.
-    State = State0#{handler_timeout_ms => json_rpc_config:get(handler_timeout_ms)},
+-doc false.
+-spec init(cowboy_req:req(), map()) -> {ok, cowboy_req:req(), map()}.
+init(Req, State0) ->
+    %% Snapshot the config the request path needs, so the hot path does not
+    %% go back through application:get_env plus validation per request.
+    State = State0#{
+        max_body_bytes => json_rpc_config:get(max_body_bytes),
+        request_id => json_rpc_transport:request_id(
+            cowboy_req:header(<<"x-request-id">>, Req)
+        )
+    },
     try
-        handle(Req0, State)
+        handle(Req, State)
     catch
         Class:Reason:Stacktrace ->
-            ?LOG_ERROR("Unhandled HTTP handler error: ~p:~p~n~p", [Class, Reason, Stacktrace]),
-            Body = jiffy:encode(
-                json_rpc_dispatcher:create_error_response(null, -32603, <<"Internal error">>)
-            ),
-            ReqErr = cowboy_req:reply(500, ?JSON_HEADERS, Body, Req0),
-            {ok, ReqErr, State}
+            ?LOG_ERROR("json_rpc: HTTP handler failed ~p:~p~n~p", [Class, Reason, Stacktrace]),
+            {ok, respond(500, json_rpc_error:internal_error(), Req), State}
     end.
 
-handle(Req0, State) ->
-    case cowboy_req:method(Req0) of
+%%% Internal
+
+handle(Req, State) ->
+    case cowboy_req:method(Req) of
         <<"POST">> ->
-            handle_post(Req0, State);
-        _ ->
-            Req = cowboy_req:reply(
-                405,
-                #{<<"allow">> => <<"POST">>},
-                <<>>,
-                Req0
+            post(Req, State);
+        _Other ->
+            Allow = #{<<"allow">> => <<"POST">>},
+            Error = json_rpc_error:new(
+                ?JSONRPC_INVALID_REQUEST, <<"Invalid Request">>, #{
+                    reason => <<"method not allowed">>
+                }
             ),
-            {ok, Req, State}
+            {ok, respond(405, Allow, Error, Req), State}
     end.
 
-handle_post(Req0, State) ->
-    case content_type_is_json(Req0) of
+post(Req, State) ->
+    case is_json(Req) of
         true ->
-            handle_json_post(Req0, State);
+            read_body(Req, State);
         false ->
-            Req = cowboy_req:reply(415, #{}, <<>>, Req0),
-            {ok, Req, State}
+            Error = json_rpc_error:new(
+                ?JSONRPC_INVALID_REQUEST, <<"Invalid Request">>, #{
+                    reason => <<"content-type must be application/json">>
+                }
+            ),
+            {ok, respond(415, Error, Req), State}
     end.
 
-handle_json_post(Req0, State) ->
-    MaxBody = maps:get(max_body_bytes, State),
-    case read_full_body(Req0, MaxBody, <<>>) of
-        {ok, Body, Req1} ->
-            handle_body(Body, Req1, State);
-        {too_large, Req1} ->
-            %% The body was rejected at the size cap before any parsing, so
-            %% -32700 Parse error is wrong. Use -32600 Invalid Request and
-            %% keep the 413 status code.
-            Req = cowboy_req:reply(413, ?JSON_HEADERS, ?INVALID_REQUEST_BODY, Req1),
-            {ok, Req, State}
+read_body(Req0, State) ->
+    Max = maps:get(max_body_bytes, State),
+    case read_body(Req0, Max, <<>>) of
+        {ok, Body, Req} ->
+            dispatch(Body, Req, State);
+        {too_large, Req} ->
+            %% Rejected before any parsing happened, so -32700 would be a
+            %% lie: nothing was ever parsed.
+            Error = json_rpc_error:new(
+                ?JSONRPC_INVALID_REQUEST, <<"Invalid Request">>, #{
+                    reason => <<"request body too large">>, max_body_bytes => Max
+                }
+            ),
+            {ok, respond(413, Error, Req), State}
     end.
 
-read_full_body(Req0, MaxBody, Acc) ->
-    %% Read in chunks, capping accumulated size at MaxBody.
-    ReadOpts = #{length => MaxBody, period => 5000},
-    case cowboy_req:read_body(Req0, ReadOpts) of
-        {ok, Data, Req1} ->
+%% Read in chunks and stop as soon as the cap is passed. `length' is set to
+%% what is still allowed rather than to the total cap, so a body that keeps
+%% coming cannot buffer close to twice the limit before being rejected.
+read_body(Req0, Max, Acc) ->
+    Remaining = Max - byte_size(Acc),
+    case cowboy_req:read_body(Req0, #{length => Remaining + 1, period => 5000}) of
+        {ok, Data, Req} ->
             Combined = <<Acc/binary, Data/binary>>,
-            case byte_size(Combined) > MaxBody of
-                true -> {too_large, Req1};
-                false -> {ok, Combined, Req1}
+            case byte_size(Combined) > Max of
+                true -> {too_large, Req};
+                false -> {ok, Combined, Req}
             end;
-        {more, Data, Req1} ->
+        {more, Data, Req} ->
             Combined = <<Acc/binary, Data/binary>>,
-            case byte_size(Combined) > MaxBody of
-                true -> {too_large, Req1};
-                false -> read_full_body(Req1, MaxBody, Combined)
+            case byte_size(Combined) > Max of
+                true -> {too_large, Req};
+                false -> read_body(Req, Max, Combined)
             end
     end.
 
-handle_body(Body, Req0, State) ->
-    case decode_json(Body) of
-        {ok, Parsed} ->
-            Timeout = maps:get(handler_timeout_ms, State),
-            case json_rpc_worker:run(Parsed, Timeout) of
-                {ok, Reply} ->
-                    send_reply(Reply, Req0, State);
-                {error, timeout} ->
-                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
-                    ErrBody = jiffy:encode(
-                        json_rpc_dispatcher:create_error_response(
-                            Id, -32603, <<"Internal error">>, #{reason => timeout}
-                        )
-                    ),
-                    Req = cowboy_req:reply(200, ?JSON_HEADERS, ErrBody, Req0),
-                    {ok, Req, State};
-                {error, {crash, Class, Reason}} ->
-                    ?LOG_ERROR("Handler crashed: ~p:~p", [Class, Reason]),
-                    Id = json_rpc_dispatcher:call_id_for_error(Parsed),
-                    ErrBody = jiffy:encode(
-                        json_rpc_dispatcher:create_error_response(
-                            Id, -32603, <<"Internal error">>
-                        )
-                    ),
-                    Req = cowboy_req:reply(200, ?JSON_HEADERS, ErrBody, Req0),
-                    {ok, Req, State}
-            end;
-        {error, parse_error} ->
-            Req = cowboy_req:reply(200, ?JSON_HEADERS, ?PARSE_ERROR_BODY, Req0),
-            {ok, Req, State}
+dispatch(Body, Req, State) ->
+    Context = #{
+        transport => http,
+        request_id => maps:get(request_id, State),
+        connection_pid => self(),
+        peer => peer(Req)
+    },
+    case json_rpc_transport:handle(Body, Context) of
+        {reply, IoData} ->
+            {ok, cowboy_req:reply(200, ?JSON_HEADERS, IoData, Req), State};
+        no_reply ->
+            {ok, cowboy_req:reply(204, #{}, <<>>, Req), State}
     end.
 
-decode_json(Body) ->
+respond(Status, Error, Req) ->
+    respond(Status, #{}, Error, Req).
+
+respond(Status, Headers, Error, Req) ->
+    Body = json_rpc_transport:error_body(Error),
+    cowboy_req:reply(Status, maps:merge(?JSON_HEADERS, Headers), Body, Req).
+
+peer(Req) ->
     try
-        {ok, jiffy:decode(Body, [return_maps])}
+        cowboy_req:peer(Req)
     catch
-        _:_ -> {error, parse_error}
+        _Class:_Reason -> undefined
     end.
 
-send_reply(no_response, Req0, State) ->
-    Req = cowboy_req:reply(204, #{}, <<>>, Req0),
-    {ok, Req, State};
-send_reply(Reply, Req0, State) ->
-    Body = jiffy:encode(Reply),
-    Req = cowboy_req:reply(200, ?JSON_HEADERS, Body, Req0),
-    {ok, Req, State}.
-
-content_type_is_json(Req) ->
+%% Accept `application/json' and any `application/*+json' structured suffix,
+%% with or without parameters such as `charset=utf-8'.
+is_json(Req) ->
     try cowboy_req:parse_header(<<"content-type">>, Req) of
-        {<<"application">>, <<"json">>, _} -> true;
-        _ -> false
+        {<<"application">>, <<"json">>, _Params} -> true;
+        {<<"application">>, Subtype, _Params} -> is_json_suffix(Subtype);
+        _Other -> false
     catch
-        _:_ -> false
+        _Class:_Reason -> false
+    end.
+
+is_json_suffix(Subtype) ->
+    case binary:match(Subtype, <<"+json">>) of
+        nomatch -> false;
+        {Start, Length} -> Start + Length =:= byte_size(Subtype)
     end.

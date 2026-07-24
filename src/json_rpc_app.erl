@@ -12,16 +12,26 @@
 
 -module(json_rpc_app).
 
+-moduledoc """
+Application callback module.
+
+Configuration is validated in full before the supervisor starts, so a bad
+value fails the application start naming the offending key, rather than
+surfacing later as a listener that will not bind or a timeout that behaves
+strangely.
+""".
+
 -behaviour(application).
 
 -export([start/2, stop/1]).
 
+-doc false.
+-spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
 start(_StartType, _StartArgs) ->
-    %% Validate every config key up front so a misconfigured environment
-    %% fails the application start cleanly instead of crashing the listener
-    %% later with a less actionable error.
     ok = json_rpc_config:validate_all(),
     json_rpc_sup:start_link().
 
+-doc false.
+-spec stop(term()) -> ok.
 stop(_State) ->
     ok.

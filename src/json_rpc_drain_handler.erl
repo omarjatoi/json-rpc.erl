@@ -12,14 +12,35 @@
 
 -module(json_rpc_drain_handler).
 
-%% Cowboy handler installed when the listener is draining. Replies 503 to
-%% any new request so the listener stops accepting work while in-flight
-%% requests are allowed to finish.
+-moduledoc """
+Answers `503` while the listener is draining.
+
+`m:json_rpc_listener` swaps every route to this handler at the start of
+shutdown, so work that arrives during the drain window is refused instead of
+being started and then cut off. `Connection: close` stops clients from
+holding a keep-alive socket open against a node that is going away.
+
+The body is a JSON-RPC error envelope like every other error this server
+emits, so a client can parse the response without special-casing shutdown.
+""".
 
 -behaviour(cowboy_handler).
 
+-include("json_rpc.hrl").
+
 -export([init/2]).
 
+-doc false.
+-spec init(cowboy_req:req(), State) -> {ok, cowboy_req:req(), State}.
 init(Req0, State) ->
-    Req = cowboy_req:reply(503, #{<<"connection">> => <<"close">>}, <<>>, Req0),
+    Error = json_rpc_error:new(
+        ?JSONRPC_SERVER_ERROR_MAX,
+        <<"Server error">>,
+        #{reason => <<"server is shutting down">>}
+    ),
+    Headers = #{
+        <<"content-type">> => <<"application/json">>,
+        <<"connection">> => <<"close">>
+    },
+    Req = cowboy_req:reply(503, Headers, json_rpc_transport:error_body(Error), Req0),
     {ok, Req, State}.
