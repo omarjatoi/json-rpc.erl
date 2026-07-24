@@ -32,7 +32,7 @@ of concurrent tasks, and doing so bounds the worst case for a batch of N
 slow calls at one timeout rather than N of them.
 """.
 
--export([run/2, run_many/2]).
+-export([run_many/2]).
 
 -doc "What became of one handler invocation.".
 -type outcome() ::
@@ -46,14 +46,6 @@ slow calls at one timeout rather than N of them.
 -export_type([outcome/0, result/0]).
 
 -define(TAG, '$json_rpc_worker').
-
--doc """
-Run a single function under `Timeout` milliseconds and return its outcome.
-""".
--spec run(fun(() -> term()), timeout()) -> outcome().
-run(Fun, Timeout) ->
-    [#{outcome := Outcome}] = run_many([Fun], Timeout),
-    Outcome.
 
 -doc """
 Run every function concurrently under one shared `Timeout`.

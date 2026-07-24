@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: build / xref / dialyzer / ct
+    name: format / lint / xref / dialyzer / ct
     runs-on: ubuntu-latest
 
     permissions:
@@ -41,6 +41,12 @@ jobs:
 
       - name: Compile
         run: nix develop --command rebar3 compile
+
+      - name: Format check
+        run: nix develop --command make format-check
+
+      - name: Lint
+        run: nix develop --command rebar3 lint
 
       - name: Xref
         run: nix develop --command rebar3 xref

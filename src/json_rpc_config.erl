@@ -98,8 +98,8 @@ get(Key) ->
 -doc """
 Validate every key, raising on the first bad one.
 
-Called from `json_rpc_app:start/2` so misconfiguration fails the application
-start rather than a request.
+Called from the application start callback in `m:json_rpc_app`, so
+misconfiguration fails the start rather than a request.
 """.
 -spec validate_all() -> ok.
 validate_all() ->
