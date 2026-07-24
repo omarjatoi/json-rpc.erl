@@ -155,9 +155,19 @@ positional_params(_Config) ->
     ?assertEqual(ok_response(1, 19), call(<<"subtract">>, [42, 23], 1)),
     ?assertEqual(ok_response(2, -19), call(<<"subtract">>, [23, 42], 2)).
 
+%% The specification's worked example, both key orders. Member order in a
+%% JSON object is not significant, so both must reach the handler the same
+%% way and produce the same result.
 named_params(_Config) ->
-    %% `echo' returns params verbatim, which proves a by-name object reaches
-    %% the handler unchanged.
+    ?assertEqual(
+        ok_response(3, 19),
+        call(<<"subtract">>, #{<<"subtrahend">> => 23, <<"minuend">> => 42}, 3)
+    ),
+    ?assertEqual(
+        ok_response(4, 19),
+        call(<<"subtract">>, #{<<"minuend">> => 42, <<"subtrahend">> => 23}, 4)
+    ),
+    %% And an arbitrary by-name object reaches a handler unchanged.
     Params = #{<<"a">> => 1, <<"b">> => 2},
     ?assertEqual(ok_response(1, Params), call(<<"echo">>, Params, 1)).
 
@@ -281,8 +291,12 @@ batch_all_notifications(_Config) ->
 batch_empty(_Config) ->
     ?assertEqual(invalid_request(null), json_rpc:dispatch([])).
 
-%% A batch of nothing but junk still answers one error per element.
+%% A batch of nothing but junk still answers one error per element. Both
+%% shapes come straight from the specification's examples: a non-empty batch
+%% holding a single invalid element answers an Array of one error, and three
+%% invalid elements answer three.
 batch_invalid_elements(_Config) ->
+    ?assertEqual([invalid_request(null)], json_rpc:dispatch([1])),
     ?assertEqual(
         [invalid_request(null), invalid_request(null), invalid_request(null)],
         json_rpc:dispatch([1, 2, 3])

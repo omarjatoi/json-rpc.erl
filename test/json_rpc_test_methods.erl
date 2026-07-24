@@ -43,7 +43,10 @@
 
 %%% Ordinary results
 
-subtract([A, B]) -> A - B.
+%% Both parameter styles from the specification's worked examples: by
+%% position, and by name in either key order.
+subtract([A, B]) -> A - B;
+subtract(#{<<"minuend">> := Minuend, <<"subtrahend">> := Subtrahend}) -> Minuend - Subtrahend.
 
 sum([A, B, C]) -> A + B + C.
 
