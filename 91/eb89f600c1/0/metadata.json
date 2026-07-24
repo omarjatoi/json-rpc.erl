@@ -1,0 +1,72 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_id": "91eb89f600c1",
+  "session_id": "71ab646d-44f2-4a0e-8628-36a0b0a170a5",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T21:57:18.01833Z",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "test/json_rpc_test_methods.erl",
+    "test/json_rpc_test_support.erl",
+    "test/json_rpc_protocol_SUITE.erl",
+    "src/json_rpc_dispatcher.erl",
+    "test/json_rpc_http_SUITE.erl",
+    "test/json_rpc_ws_SUITE.erl",
+    "test/json_rpc_registry_SUITE.erl",
+    "test/json_rpc_app_SUITE.erl",
+    "src/json_rpc_ws_handler.erl",
+    "src/json_rpc_app.erl",
+    "elvis.config",
+    "src/json_rpc_telemetry.erl"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "45a2538cfa17",
+  "checkpoint_transcript_start": 355,
+  "transcript_lines_at_start": 355,
+  "token_usage": {
+    "input_tokens": 76,
+    "cache_creation_tokens": 80524,
+    "cache_read_tokens": 8782642,
+    "output_tokens": 47958,
+    "api_call_count": 38
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-goal-2026-07-24T21:35:43.954145Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "goal"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "45a2538cfa17",
+      "timestamp": "2026-07-24T21:35:43.954145Z",
+      "native": {
+        "command": "/goal"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/goal",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T21:57:17.982072Z",
+    "agent_lines": 1932,
+    "agent_removed": 73,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1932,
+    "total_lines_changed": 3203,
+    "agent_percentage": 62.597564783015926,
+    "metric_version": 2
+  }
+}

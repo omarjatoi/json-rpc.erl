@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "91eb89f600c1",
+  "strategy": "manual-commit",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "elvis.config",
+    "src/json_rpc_app.erl",
+    "src/json_rpc_dispatcher.erl",
+    "src/json_rpc_telemetry.erl",
+    "src/json_rpc_ws_handler.erl",
+    "test/json_rpc_app_SUITE.erl",
+    "test/json_rpc_http_SUITE.erl",
+    "test/json_rpc_protocol_SUITE.erl",
+    "test/json_rpc_registry_SUITE.erl",
+    "test/json_rpc_test_methods.erl",
+    "test/json_rpc_test_support.erl",
+    "test/json_rpc_ws_SUITE.erl"
+  ],
+  "sessions": [
+    {
+      "metadata": "/91/eb89f600c1/0/metadata.json",
+      "transcript": "/91/eb89f600c1/0/full.jsonl",
+      "compact_transcript": "/91/eb89f600c1/0/transcript.jsonl",
+      "content_hash": "/91/eb89f600c1/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 76,
+    "cache_creation_tokens": 80524,
+    "cache_read_tokens": 8782642,
+    "output_tokens": 47958,
+    "api_call_count": 38
+  }
+}
