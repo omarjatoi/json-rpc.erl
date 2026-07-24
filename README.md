@@ -1,138 +1,256 @@
 # json-rpc
 
-[JSON-RPC-2.0](https://www.jsonrpc.org/specification) server in Erlang, exposed
-over plain HTTP and WebSocket via [Cowboy](https://github.com/ninenines/cowboy).
+A [JSON-RPC 2.0](https://www.jsonrpc.org/specification) server in Erlang,
+served over HTTP and WebSocket by [Cowboy](https://github.com/ninenines/cowboy).
+
+- **Complete protocol coverage** — calls, notifications, batches, and every
+  error the specification defines, including the awkward corners: id echoing
+  on malformed envelopes, `"id": null` as a call rather than a notification,
+  and silence for notifications whatever the handler does.
+- **No native dependencies.** JSON is handled by OTP's own `json` module, so
+  there is no NIF in the tree and no C toolchain at build time.
+- **Failure containment.** Every handler runs in its own monitored process
+  under a deadline. A crash, a hang, or a result JSON cannot represent
+  degrades one call to `-32603` and leaves the connection serving.
+- **Observable.** `telemetry` events per request, batch, and connection, plus
+  a correlation id on every handler log line.
+
+Requires OTP 27 or newer.
+
+## Install
+
+```erlang
+{deps, [{json_rpc, "1.0.0"}]}.
+```
+
+## Quick start
+
+```erlang
+{ok, _} = application:ensure_all_started(json_rpc),
+ok = json_rpc:register(<<"subtract">>, {my_handlers, subtract}).
+```
+
+```erlang
+-module(my_handlers).
+-export([subtract/1]).
+
+subtract([A, B]) -> A - B.
+```
+
+```sh
+curl -sX POST http://localhost:8080/rpc \
+    -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}'
+# {"jsonrpc":"2.0","id":1,"result":19}
+```
 
 ## Endpoints
 
-The application starts a single Cowboy listener with two routes:
+| Route | Purpose |
+| --- | --- |
+| `POST /rpc` | One-shot call, notification, or batch |
+| `GET /ws` | Persistent JSON-RPC channel over WebSocket text frames |
 
-| Route          | Method | Purpose                              |
-|----------------|--------|--------------------------------------|
-| `POST /rpc`    | POST   | One-shot JSON-RPC call/notification/batch. |
-| `GET /ws`      | GET    | Persistent JSON-RPC channel over WebSocket text frames. |
+Both paths are configurable (`http_path`, `ws_path`).
 
-The HTTP transport answers with `200 OK` for any well-formed JSON-RPC payload —
-JSON-RPC errors live in the response body, not the HTTP status. The transport
-layer itself returns:
+A well-formed payload always answers `200 OK`, with JSON-RPC errors in the
+body — a `-32601` is a successful HTTP exchange carrying an application-level
+failure. The other statuses concern the HTTP request itself, and every one of
+them still carries a JSON-RPC error envelope so clients parse one shape:
 
-- `204 No Content` for notifications and all-notification batches (no body).
-- `405 Method Not Allowed` (with `Allow: POST`) for non-`POST` requests to `/rpc`.
-- `413 Payload Too Large` (with a `-32700` JSON-RPC body) when the request body
-  exceeds `max_body_bytes`.
-- `415 Unsupported Media Type` when `Content-Type` is not `application/json`.
+| Status | When |
+| --- | --- |
+| `204 No Content` | Notification, or a batch of nothing but notifications |
+| `405 Method Not Allowed` | Anything other than `POST` |
+| `413 Content Too Large` | Body exceeded `max_body_bytes` |
+| `415 Unsupported Media Type` | `Content-Type` was not JSON |
+| `503 Service Unavailable` | Server is draining for shutdown |
 
-The WebSocket endpoint accepts JSON-RPC payloads as text frames and responds
-with text frames (notifications produce no frame at all). Malformed JSON
-yields a `-32700` envelope as a text frame.
+The WebSocket endpoint takes payloads as text frames and answers with text
+frames; notifications produce no frame at all. Binary frames close the
+connection with `1003`, since JSON-RPC is defined over text and silently
+dropping the frame would leave the client waiting forever.
 
-## Usage
+## Writing handlers
 
-### Register a method
+A handler is a `{Module, Function}` pair called with the request's `params`.
+Its return value becomes the response:
+
+| Return | Response |
+| --- | --- |
+| `{error, Error}` | An error response |
+| `{ok, Result}` | A success response carrying `Result` |
+| anything else | A success response carrying that term |
+
+`Error` may be an error object from `json_rpc_error`, a `{Code, Message}`
+pair, or `{Code, Message, Data}`. Bare tuples are not JSON-encodable, so
+using `{ok, _}` and `{error, _}` as control costs nothing a handler could
+legitimately want to return.
+
+Raising works too, from anywhere in the call stack:
 
 ```erlang
-ok = json_rpc_methods:register_method(
-    <<"subtract">>,
-    {my_handlers, subtract}
-).
+withdraw(#{<<"amount">> := Amount}) when Amount =< 0 ->
+    json_rpc_error:throw_error(-32000, <<"amount must be positive">>);
+withdraw(#{<<"amount">> := Amount}) ->
+    {ok, do_withdraw(Amount)}.
 ```
 
-Handlers are `{Module, Function}` pairs invoked as arity-1 (the function
-receives the JSON-RPC `params` value). They may surface application-level
-errors by throwing the structured tuple `{jsonrpc_error, Code, Msg}` or
-`{jsonrpc_error, Code, Msg, Data}`; the values flow through to the JSON-RPC
-`error` object verbatim.
+An outright crash, a timeout, or an unencodable result all become
+`-32603 Internal error`, with the real reason logged and reported over
+telemetry but never sent to the client.
 
-### HTTP examples
+### Error codes
 
-A call:
+The specification reserves `-32768..-32000` but delegates `-32099..-32000` to
+the implementation as *server errors*. Handlers may use that range and any
+application-defined code outside the reserved band. A handler that tries to
+emit a framework-owned code — `-32700`, `-32600`, `-32601`, `-32602`,
+`-32603`, or anything in `-32768..-32100` — gets `-32603` substituted, so it
+can never impersonate a protocol-level failure that a client would act on.
 
-```sh
-curl -sS -X POST http://localhost:8080/rpc \
-    -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}'
-# -> {"jsonrpc":"2.0","result":19,"id":1}
+### Handler context
+
+Register the same function name at arity 2 to receive the request context as
+well: `transport`, `request_id`, `peer`, and `connection_pid`.
+
+```erlang
+subscribe_to_prices(_Params, #{connection_pid := Pid}) ->
+    ok = json_rpc_ws:subscribe(Pid, prices),
+    <<"subscribed">>.
 ```
 
-A notification (no `id` member, expect `204 No Content`):
+Arity 2 wins when a module exports both, because a handler that wants the
+context has no other way to reach it.
 
-```sh
-curl -sS -i -X POST http://localhost:8080/rpc \
-    -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","method":"update","params":[1,2,3]}'
-# -> HTTP/1.1 204 No Content
+### Declaring methods in configuration
+
+Methods listed in the `methods` key are registered at start and re-registered
+if the registry ever restarts, which methods registered at runtime are not:
+
+```erlang
+{json_rpc, [
+    {methods, [{<<"subtract">>, {my_handlers, subtract}}]}
+]}
 ```
 
-A batch (notifications inside a batch are silently dropped from the response
-array; an all-notification batch yields `204 No Content`):
+## Server push
 
-```sh
-curl -sS -X POST http://localhost:8080/rpc \
-    -H 'Content-Type: application/json' \
-    -d '[
-        {"jsonrpc":"2.0","method":"sum","params":[1,2,4],"id":"1"},
-        {"jsonrpc":"2.0","method":"notify_hello","params":[7]},
-        {"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":"2"}
-    ]'
-# -> [{"jsonrpc":"2.0","result":7,"id":"1"},
-#     {"jsonrpc":"2.0","result":19,"id":"2"}]
+JSON-RPC is peer-symmetric, so the server may send notifications on its own
+initiative over WebSocket:
+
+```erlang
+ok = json_rpc:push(ConnectionPid, <<"tick">>, #{<<"px">> => 42}),
+
+ok = json_rpc:subscribe(ConnectionPid, prices),
+ok = json_rpc:publish(prices, <<"tick">>, #{<<"px">> => 42}).
 ```
+
+Subscriptions are held in `pg` and cleaned up automatically when a connection
+goes away. `pg` is node-local: to fan out across replicas, either cluster the
+BEAM nodes so groups span the cluster, or bridge an external bus (Redis, NATS,
+Kafka) into a local `publish/3` on each node. This library ships no bridge.
 
 ## Configuration
 
-Set these via `application:set_env/3` (or `sys.config`) before
-`application:ensure_all_started(json_rpc)`.
+Set via `application:set_env/3` or `sys.config` before the application starts.
+Every value is validated at boot, so a bad one fails the start naming the key
+rather than surfacing later as a listener that will not bind.
 
-| Key                | Default       | Meaning |
-|--------------------|---------------|---------|
-| `port`             | `8080`        | TCP port for the Cowboy listener. |
-| `max_body_bytes`   | `1_048_576`   | Per-request body cap. Overflow → `413` with a `-32700` body. |
-| `max_connections`  | `1_024`       | `ranch`'s `max_connections` for the listener. |
-| `num_acceptors`    | `10`          | Number of acceptor processes. |
-| `idle_timeout_ms`  | `60_000`      | Cowboy `idle_timeout` (applies to keep-alive HTTP and WebSocket). |
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `port` | `8080` | TCP port for the listener |
+| `http_path` | `"/rpc"` | Route for the HTTP endpoint |
+| `ws_path` | `"/ws"` | Route for the WebSocket endpoint |
+| `max_connections` | `1024` | Ranch's connection cap |
+| `num_acceptors` | `10` | Acceptor processes |
+| `max_body_bytes` | `1048576` | Largest accepted HTTP body |
+| `idle_timeout_ms` | `60000` | Cowboy idle timeout |
+| `request_timeout_ms` | `10000` | Wait for a request line on an idle keep-alive socket |
+| `max_keepalive_requests` | `1000` | Requests per keep-alive connection |
+| `handler_timeout_ms` | `10000` | Deadline for handler execution |
+| `max_batch_size` | `100` | Largest accepted batch |
+| `max_methods` | `1024` | Registry size cap |
+| `methods` | `[]` | Statically declared methods |
+| `drain_timeout_ms` | `5000` | Shutdown drain budget |
+| `ws_max_frame_bytes` | `1048576` | Largest accepted WebSocket frame |
+| `ws_idle_timeout_ms` | `60000` | WebSocket idle timeout |
+| `ws_max_in_flight` | `32` | Concurrent dispatches per WebSocket connection |
+
+## Concurrency and limits
+
+Batch elements run concurrently under one shared deadline, so a batch of ten
+slow calls costs one timeout rather than ten. Responses are reassembled in
+request order regardless of completion order.
+
+WebSocket frames are dispatched off the connection process, so a slow call
+never stalls the socket: the connection keeps answering pings, can still be
+drained, and a fast call sent after a slow one is answered first. Past
+`ws_max_in_flight` concurrent dispatches, further calls are shed immediately
+with `-32000` rather than queued, which keeps a client that pipelines without
+limit from growing the node unbounded.
+
+## Observability
+
+Attach to the `telemetry` events documented in `json_rpc_telemetry`:
+
+```erlang
+telemetry:attach(
+    my_handler,
+    [json_rpc, request, stop],
+    fun(_Event, #{duration := Duration}, #{method := Method}, _Config) ->
+        my_metrics:observe(Method, Duration)
+    end,
+    undefined
+).
+```
+
+Handler logs carry `json_rpc_method`, `json_rpc_id`, and `json_rpc_request_id`
+in their logger metadata. `json_rpc_request_id` is taken from an inbound
+`x-request-id` header when the upstream proxy sets one, so a trace id follows
+the call through.
+
+## Graceful shutdown
+
+Stopping the application installs a `503`-replying route, asks every
+WebSocket connection to send a `1001 Going Away` close frame, then waits for
+in-flight requests to finish, up to `drain_timeout_ms`.
+
+This is best-effort by construction: a client reconnecting during the window
+still gets a `503`. Taking the node out of a load balancer's rotation before
+`SIGTERM` is what makes a shutdown invisible; the drain only keeps in-flight
+work from being cut off.
 
 ## Securing your endpoint
 
-The library ships **no** authentication, no TLS listener, and no `Authorization`
-parsing of any kind. By design it expects to sit plaintext behind an L7 proxy
-(Envoy, nginx, HAProxy, …) that terminates TLS, enforces rate limits, and
-applies whatever auth scheme you use (mTLS, bearer tokens, OIDC, …). If you
-need to authenticate inside the BEAM, slot a Cowboy middleware in front of the
-two handlers; full recipes will land in a later phase.
+The library terminates no TLS and performs no authentication. It is built to
+sit plaintext behind an L7 proxy (Envoy, nginx, HAProxy) that terminates TLS,
+enforces rate limits, and applies your auth scheme.
+
+To authenticate inside the BEAM, put a `cowboy_middleware` ahead of the
+handlers and short-circuit unauthenticated requests before they reach the
+dispatcher.
 
 ## Development
 
-`erlang` and `rebar3` are the two required development dependencies; `erlfmt` is useful but not mandatory. There is a [`flake.nix`](./flake.nix) with a development shell with both dependencies present, you can run the shell with `nix develop` (you may want to pass `--command /bin/zsh` on macOS), or via `make sh`.
+The toolchain comes from the Nix flake: `nix develop`, or `make sh` for a
+shell. Then `make` to list the tasks:
 
-There is a [`Makefile`](./Makefile) with the common tasks; run `make` to see
-them:
+| Task | Description |
+| --- | --- |
+| `make build` | Compile |
+| `make test` | Run the Common Test suites |
+| `make format` | Format with erlfmt |
+| `make lint` | Run elvis |
+| `make xref` | Cross-reference analysis |
+| `make dialyzer` | Static type analysis |
+| `make cover` | Test coverage report |
+| `make docs` | Build the ex_doc documentation |
+| `make check` | Format check, lint, xref, dialyzer, and tests |
 
-```
-Run tasks for json-rpc
-
-  build      compile the json-rpc application
-  clean      run rebar3 clean and delete the build dir
-  deps       get dependencies for the project
-  format     run the erlfmt formatter
-  lint       run linter (rebar3_lint)
-  xref       run rebar3 xref
-  dialyzer   run rebar3 dialyzer
-  check      run format, lint, xref, dialyzer (fail fast)
-  test       run all common_test suites
-  ct         run rebar3 ct
-  sh         launch a nix shell with zsh (erlang, rebar3)
-```
-
-Alternatively, you can use `rebar3` directly.
-
-|Command|Description|
-|-|-|
-|`rebar3 update`|Download any dependencies|
-|`rebar3 compile`|Build the project|
-|`rebar3 ct`|Run all common_test suites|
-|`rebar3 xref`|Run cross-reference checks|
-|`rebar3 dialyzer`|Run the static type analyzer|
-|`rebar3 format`|Run the [Erlang formatter](https://github.com/WhatsApp/erlfmt)|
+The suites are split by concern: `json_rpc_protocol_SUITE` covers
+specification conformance at the dispatcher level with no transport in the
+way, and the transport, registry, and application suites cover the rest.
 
 ## License
 

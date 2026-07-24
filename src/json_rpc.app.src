@@ -12,21 +12,36 @@
 
 {application, json_rpc, [
     {description, "JSON-RPC 2.0 server over HTTP and WebSocket in Erlang"},
-    {vsn, "0.3.0"},
+    {vsn, "1.0.0"},
     {registered, [json_rpc_sup, json_rpc_methods, json_rpc_listener]},
-    {applications, [kernel, stdlib, cowboy, jiffy]},
+    {applications, [kernel, stdlib, cowboy, telemetry]},
     {env, [
+        %% Listener
         {port, 8080},
-        {max_body_bytes, 1048576},
+        {http_path, "/rpc"},
+        {ws_path, "/ws"},
         {max_connections, 1024},
         {num_acceptors, 10},
+
+        %% HTTP limits and timeouts
+        {max_body_bytes, 1048576},
         {idle_timeout_ms, 60000},
         {request_timeout_ms, 10000},
+        {max_keepalive_requests, 1000},
+
+        %% Dispatch
         {handler_timeout_ms, 10000},
-        {drain_timeout_ms, 5000},
+        {max_batch_size, 100},
         {max_methods, 1024},
+        {methods, []},
+
+        %% Shutdown
+        {drain_timeout_ms, 5000},
+
+        %% WebSocket
         {ws_max_frame_bytes, 1048576},
-        {ws_idle_timeout_ms, 60000}
+        {ws_idle_timeout_ms, 60000},
+        {ws_max_in_flight, 32}
     ]},
     {mod, {json_rpc_app, []}},
     {licenses, ["Apache-2.0"]},

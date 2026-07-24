@@ -19,3 +19,6 @@ logs
 rebar3.crashdump
 *~
 .direnv
+
+# ex_doc output
+doc

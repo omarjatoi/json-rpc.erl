@@ -12,55 +12,114 @@
 
 -module(json_rpc_test_methods).
 
+%% Handlers exercised by the suites. Each one isolates a single behaviour of
+%% the handler contract so a failing case names the behaviour that broke.
+
 -export([
     subtract/1,
     sum/1,
     get_data/1,
+    echo/1,
     update/1,
     notify_sum/1,
     notify_hello/1,
-    throw_error/1,
-    throw_reserved_error/1,
     slow/1,
     crash/1,
-    crash_exit/1
+    crash_exit/1,
+    crash_throw/1,
+    throw_error/1,
+    throw_error_object/1,
+    throw_reserved/1,
+    throw_server_error/1,
+    return_error_pair/1,
+    return_error_triple/1,
+    return_error_object/1,
+    return_ok_tuple/1,
+    unencodable/1,
+    unencodable_in_batch/1,
+    context/2,
+    subscribe_self/2
 ]).
 
-subtract([A, B]) -> A - B.
+%%% Ordinary results
+
+%% Both parameter styles from the specification's worked examples: by
+%% position, and by name in either key order.
+subtract([A, B]) -> A - B;
+subtract(#{<<"minuend">> := Minuend, <<"subtrahend">> := Subtrahend}) -> Minuend - Subtrahend.
 
 sum([A, B, C]) -> A + B + C.
 
-get_data(_) -> [<<"hello">>, 5].
+get_data(_Params) -> [<<"hello">>, 5].
 
-update(_) -> ok.
+echo(Params) -> Params.
 
-notify_sum(_) -> ok.
+update(_Params) -> ok.
 
-notify_hello(_) -> ok.
+notify_sum(_Params) -> ok.
 
-throw_error(_) ->
-    throw({jsonrpc_error, -1, <<"bad arg">>, #{<<"detail">> => <<"oops">>}}).
+notify_hello(_Params) -> ok.
 
-%% A handler attempting to impersonate a framework-reserved error code. The
-%% dispatcher must intercept this and substitute -32603 Internal error.
-throw_reserved_error(_) ->
-    throw({jsonrpc_error, -32601, <<"fake method not found">>}).
-
-%% Sleeps for the number of milliseconds passed as a single positional param.
+%% Sleeps for the milliseconds given as a single positional parameter.
 slow([Ms]) when is_integer(Ms), Ms >= 0 ->
     timer:sleep(Ms),
     <<"done">>.
 
-%% Raises an `error' exception so the dispatcher's surrounding try/catch
-%% converts it into a -32603 Internal error envelope. Used to verify that
-%% the dispatcher's narrowed catch still handles handler bugs gracefully.
-crash(_) ->
-    error(boom).
+%%% Crashes. Each class must be contained and reported as -32603.
 
-%% Calls `exit/1' so the exception is not caught by the dispatcher and
-%% propagates to `json_rpc_worker', which kills the worker process and
-%% returns `{error, {crash, exit, boom}}' to the transport. Used to verify
-%% that the per-request worker isolates real handler crashes from the
-%% connection process.
-crash_exit(_) ->
-    exit(boom).
+crash(_Params) -> error(boom).
+
+crash_exit(_Params) -> exit(boom).
+
+crash_throw(_Params) -> throw(boom).
+
+%%% Raised protocol errors
+
+%% The pre-1.0 tuple shape, still supported.
+throw_error(_Params) ->
+    throw({jsonrpc_error, -1, <<"bad arg">>, #{<<"detail">> => <<"oops">>}}).
+
+%% The current shape, via the documented helper.
+throw_error_object(_Params) ->
+    json_rpc_error:throw_error(-1, <<"bad arg">>).
+
+%% A handler must not be able to impersonate a framework error code.
+throw_reserved(_Params) ->
+    throw({jsonrpc_error, -32601, <<"fake method not found">>}).
+
+%% -32000 is inside the implementation-defined server-error range, so this
+%% one must pass through untouched.
+throw_server_error(_Params) ->
+    json_rpc_error:throw_error(-32000, <<"upstream unavailable">>).
+
+%%% Returned protocol errors
+
+return_error_pair(_Params) -> {error, {-32050, <<"pair">>}}.
+
+return_error_triple(_Params) -> {error, {-32051, <<"triple">>, #{extra => true}}}.
+
+return_error_object(_Params) -> {error, json_rpc_error:new(-32052, <<"object">>)}.
+
+return_ok_tuple(_Params) -> {ok, 42}.
+
+%%% Results JSON cannot represent
+
+%% A bare tuple is not encodable. The transport must degrade this one call to
+%% -32603 without losing the connection or the rest of a batch.
+unencodable(_Params) -> {'this', 'is', 'a', 'tuple'}.
+
+unencodable_in_batch(_Params) -> #{bad => fun() -> ok end}.
+
+%%% Context-aware handlers, registered at arity 2
+
+context(_Params, Context) ->
+    #{
+        transport => maps:get(transport, Context, undefined),
+        has_connection_pid => is_pid(maps:get(connection_pid, Context, undefined)),
+        has_request_id => is_binary(maps:get(request_id, Context, undefined))
+    }.
+
+%% The reason arity-2 handlers exist: a handler subscribing its own caller.
+subscribe_self([Topic], #{connection_pid := Pid}) ->
+    ok = json_rpc_ws:subscribe(Pid, binary_to_atom(Topic)),
+    <<"subscribed">>.

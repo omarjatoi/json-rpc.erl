@@ -12,11 +12,44 @@
 
 -module(json_rpc_listener).
 
+-moduledoc """
+Owns the Cowboy listener and its graceful shutdown.
+
+The listener itself is supervised by Ranch, not by this process. What this
+`m:gen_server` adds is a lifetime to attach shutdown behaviour to: it traps
+exits so the supervisor's shutdown arrives as a message and `terminate/2`
+gets to drain before the socket goes away.
+
+## Draining
+
+On shutdown, in order:
+
+1. Swap the routes for `m:json_rpc_drain_handler`, so anything arriving from
+   now on gets `503` and stops being counted as work to wait for.
+2. Ask every WebSocket connection to send a `1001 Going Away` close frame.
+3. Poll Ranch until the in-flight connections are gone, capped at
+   `drain_timeout_ms`.
+4. Stop the listener.
+
+This is best-effort by construction: a client that reconnects during the
+drain window is still served a `503`. Removing the node from a load
+balancer's rotation before `SIGTERM` is what actually makes a shutdown
+invisible; this only keeps in-flight work from being cut off.
+
+## HTTP/1.1 only
+
+`protocols => [http]` pins the listener. Cowboy's `request_timeout` knob is
+HTTP/1.1-only, so silently accepting an h2c upgrade would leave the
+transport-level idle wait unset on exactly the connections that could hold
+the most streams open.
+""".
+
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").
 
 -export([start_link/0]).
+
 -export([
     init/1,
     handle_call/3,
@@ -26,114 +59,106 @@
     code_change/3
 ]).
 
--define(LISTENER, json_rpc_listener).
+-define(LISTENER, ?MODULE).
+-define(DRAIN_POLL_MS, 50).
 
-%%% Public API
-
+-doc "Start the listener. Called by `m:json_rpc_sup`.".
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%%% gen_server callbacks
-
+-doc false.
 -spec init([]) -> {ok, map()} | {stop, term()}.
 init([]) ->
-    %% Trap exits so the supervisor's `shutdown' signal is delivered as a
-    %% message and `terminate/2' runs the graceful drain logic instead of
-    %% the process being killed outright.
     process_flag(trap_exit, true),
-    Port = json_rpc_config:get(port),
-    MaxBody = json_rpc_config:get(max_body_bytes),
-    MaxConns = json_rpc_config:get(max_connections),
-    NumAcceptors = json_rpc_config:get(num_acceptors),
-    IdleTimeout = json_rpc_config:get(idle_timeout_ms),
-    RequestTimeout = json_rpc_config:get(request_timeout_ms),
-
-    Dispatch = cowboy_router:compile([
-        {'_', [
-            {"/rpc", json_rpc_http_handler, #{max_body_bytes => MaxBody}},
-            {"/ws", json_rpc_ws_handler, []}
-        ]}
-    ]),
-    TransportOpts = #{
-        socket_opts => [{port, Port}],
-        num_acceptors => NumAcceptors,
-        max_connections => MaxConns
-    },
-    ProtocolOpts = #{
-        env => #{dispatch => Dispatch},
-        idle_timeout => IdleTimeout,
-        max_keepalive => infinity,
-        request_timeout => RequestTimeout,
-        %% Pin to HTTP/1.1: our `request_timeout' knob is HTTP/1.1-only,
-        %% and silently accepting an h2c upgrade would leave the
-        %% transport-level idle wait unset on HTTP/2 connections.
-        protocols => [http]
-    },
-    case cowboy:start_clear(?LISTENER, TransportOpts, ProtocolOpts) of
+    case cowboy:start_clear(?LISTENER, transport_opts(), protocol_opts()) of
         {ok, _ListenerPid} ->
+            ?LOG_INFO("json_rpc: listening on port ~p", [json_rpc_config:get(port)]),
             {ok, #{}};
         {error, Reason} ->
             {stop, Reason}
     end.
 
-handle_call(_Request, _From, State) ->
+-doc false.
+handle_call(Request, _From, State) ->
+    ?LOG_WARNING("json_rpc_listener: unexpected call ~p", [Request]),
     {reply, {error, unknown_call}, State}.
 
+-doc false.
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+-doc false.
 handle_info(_Info, State) ->
     {noreply, State}.
 
-%% Best-effort graceful shutdown: install a 503-replying dispatch so no new
-%% work is accepted, ask every live WS handler to send a 1001 close frame,
-%% then poll Ranch until in-flight connections drain (capped at
-%% `drain_timeout_ms') and stop the listener. For stronger guarantees use a
-%% load balancer that stops sending traffic before SIGTERM.
+-doc false.
 terminate(_Reason, _State) ->
     DrainMs = json_rpc_config:get(drain_timeout_ms),
-    DrainDispatch = cowboy_router:compile([
-        {'_', [{"/[...]", json_rpc_drain_handler, []}]}
-    ]),
-    _ = cowboy:set_env(?LISTENER, dispatch, DrainDispatch),
-    broadcast_ws_drain(),
-    Deadline = erlang:monotonic_time(millisecond) + DrainMs,
-    wait_drain(Deadline),
+    _ = cowboy:set_env(?LISTENER, dispatch, drain_dispatch()),
+    broadcast_drain(),
+    wait_for_drain(erlang:monotonic_time(millisecond) + DrainMs),
     _ = cowboy:stop_listener(?LISTENER),
     ok.
 
+-doc false.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %%% Internal
 
-wait_drain(Deadline) ->
+transport_opts() ->
+    #{
+        socket_opts => [{port, json_rpc_config:get(port)}],
+        num_acceptors => json_rpc_config:get(num_acceptors),
+        max_connections => json_rpc_config:get(max_connections)
+    }.
+
+protocol_opts() ->
+    #{
+        env => #{dispatch => dispatch()},
+        idle_timeout => json_rpc_config:get(idle_timeout_ms),
+        request_timeout => json_rpc_config:get(request_timeout_ms),
+        max_keepalive => json_rpc_config:get(max_keepalive_requests),
+        protocols => [http]
+    }.
+
+dispatch() ->
+    cowboy_router:compile([
+        {'_', [
+            {json_rpc_config:get(http_path), json_rpc_http_handler, #{}},
+            {json_rpc_config:get(ws_path), json_rpc_ws_handler, #{}}
+        ]}
+    ]).
+
+drain_dispatch() ->
+    cowboy_router:compile([{'_', [{"/[...]", json_rpc_drain_handler, #{}}]}]).
+
+wait_for_drain(Deadline) ->
     case ranch:procs(?LISTENER, connections) of
         [] ->
             ok;
-        _Pids ->
+        Pids ->
             case erlang:monotonic_time(millisecond) >= Deadline of
                 true ->
+                    ?LOG_WARNING(
+                        "json_rpc: drain deadline reached with ~p connection(s) still open",
+                        [length(Pids)]
+                    ),
                     ok;
                 false ->
-                    timer:sleep(50),
-                    wait_drain(Deadline)
+                    timer:sleep(?DRAIN_POLL_MS),
+                    wait_for_drain(Deadline)
             end
     end.
 
-%% Send a `json_rpc_drain' message to every WS handler that joined the
-%% drain group in `websocket_init/1'. Each handler responds by emitting a
-%% 1001 close frame and exiting, which lets the wait_drain/1 poll above
-%% reach an empty connection list quickly instead of relying on the
-%% drain-deadline brutal-kill.
-broadcast_ws_drain() ->
+%% Ask every WebSocket connection to close itself. Without this the drain
+%% poll would just wait out the full deadline on idle-but-open sockets.
+broadcast_drain() ->
     try pg:get_members(json_rpc, json_rpc_ws_connections) of
-        Pids ->
-            lists:foreach(fun(Pid) -> Pid ! json_rpc_drain end, Pids)
+        Pids -> lists:foreach(fun(Pid) -> Pid ! json_rpc_drain end, Pids)
     catch
-        %% The pg scope may already be down (e.g. supervisor shutdown
-        %% order). Treat that as "no WS handlers to notify"; the
-        %% wait_drain poll still bounds total shutdown time.
-        _:_ -> ok
+        %% The pg scope can already be down depending on shutdown order.
+        %% Nothing to notify then; the poll below still bounds the wait.
+        _Class:_Reason -> ok
     end.

@@ -12,91 +12,121 @@
 
 -module(json_rpc_ws).
 
-%% Public server-push API for the WebSocket transport. JSON-RPC 2.0 is
-%% peer-symmetric, so the server is allowed to send Notification objects
-%% (no `id' member) on its own initiative. This module exposes:
-%%
-%%   - `push/3'        — send a Notification to one specific connection.
-%%   - `subscribe/2'   — join a connection to a topic.
-%%   - `unsubscribe/2' — leave a topic.
-%%   - `publish/3'     — broadcast a Notification to every subscriber of a
-%%                       topic.
-%%
-%% Subscriptions are backed by `pg' in the `json_rpc' scope. `pg' monitors
-%% its members, so when a WS handler process exits its subscriptions are
-%% cleaned up automatically — no `terminate/3' hook needed.
-%%
-%% Distributed caveat: `pg' is local to this Erlang node by default. To fan
-%% out across replicas either cluster the BEAM nodes (e.g. libcluster against
-%% a headless Kubernetes service) so `pg' joins span the cluster, or bridge
-%% to an external bus (Redis, NATS, Kafka, …) from each node and translate
-%% inbound bus messages into local `publish/3' calls. This library does not
-%% ship a bus bridge.
+-moduledoc """
+Server-initiated notifications over the WebSocket transport.
+
+JSON-RPC 2.0 is peer-symmetric: either side may send a Notification, which is
+a Request with no `id` and therefore no Response. That is what this module
+sends — never a Request expecting an answer, because the server has no
+correlation table to match one against.
+
+`push/3` targets one connection. `subscribe/2`, `unsubscribe/2`, and
+`publish/3` add topic fan-out on top.
+
+A handler registered at arity 2 receives the request context, whose
+`connection_pid` is exactly the pid these functions take — that is how a
+handler subscribes its own caller:
+
+```erlang
+subscribe_to_prices(_Params, #{connection_pid := Pid}) ->
+    ok = json_rpc_ws:subscribe(Pid, prices),
+    <<"subscribed">>.
+```
+
+## Scope is one node
+
+Subscriptions live in `m:pg`, which is node-local by default. To fan out
+across replicas, either cluster the BEAM nodes so `pg` groups span the
+cluster, or bridge an external bus (Redis, NATS, Kafka) into a local
+`publish/3` on each node. This library ships no bridge.
+""".
+
+-include("json_rpc.hrl").
 
 -export([
     push/3,
     subscribe/2,
     unsubscribe/2,
-    publish/3
+    publish/3,
+    subscribers/1
 ]).
 
 -define(SCOPE, json_rpc).
 
+-doc "A topic name. Any term; compared with `=:=`.".
 -type topic() :: term().
 
 -export_type([topic/0]).
 
-%% @doc Send a JSON-RPC Notification (a request without an `id' member) to a
-%% single WS connection. The frame is delivered to the connection process
-%% via `{json_rpc_push, Frame}'; the WS handler turns that into a text
-%% frame.
--spec push(pid(), binary(), term()) -> ok.
-push(ConnPid, Method, Params) when is_pid(ConnPid), is_binary(Method) ->
-    Frame = encode_notification(Method, Params),
-    ConnPid ! {json_rpc_push, Frame},
-    ok.
+-doc """
+Send a Notification to one connection.
 
-%% @doc Join `ConnPid' to the `pg' group identified by `Topic'. Idempotent;
-%% `pg' tolerates multiple joins of the same pid.
+Returns `{error, Reason}` if `Params` cannot be encoded as JSON. Delivery
+itself is fire-and-forget: a message to a dead connection is discarded, as
+with any Erlang send.
+
+Pass `undefined` for `Params` to omit the member entirely — the
+specification makes `params` optional, and some clients reject an explicit
+`"params": null`.
+""".
+-spec push(pid(), binary(), json_rpc_json:value() | undefined) ->
+    ok | {error, json_rpc_json:encode_error()}.
+push(ConnectionPid, Method, Params) when is_pid(ConnectionPid), is_binary(Method) ->
+    case encode_notification(Method, Params) of
+        {ok, Frame} ->
+            ConnectionPid ! {json_rpc_push, Frame},
+            ok;
+        {error, _Reason} = Error ->
+            Error
+    end.
+
+-doc "Join `ConnectionPid` to `Topic`. Idempotent.".
 -spec subscribe(pid(), topic()) -> ok.
-subscribe(ConnPid, Topic) when is_pid(ConnPid) ->
-    pg:join(?SCOPE, group_name(Topic), ConnPid).
+subscribe(ConnectionPid, Topic) when is_pid(ConnectionPid) ->
+    pg:join(?SCOPE, group(Topic), ConnectionPid).
 
-%% @doc Remove `ConnPid' from the `pg' group identified by `Topic'. Returns
-%% `ok' even if the pid was not a member.
+-doc "Remove `ConnectionPid` from `Topic`. Succeeds even if it was not a member.".
 -spec unsubscribe(pid(), topic()) -> ok.
-unsubscribe(ConnPid, Topic) when is_pid(ConnPid) ->
-    case pg:leave(?SCOPE, group_name(Topic), ConnPid) of
+unsubscribe(ConnectionPid, Topic) when is_pid(ConnectionPid) ->
+    case pg:leave(?SCOPE, group(Topic), ConnectionPid) of
         ok -> ok;
         not_joined -> ok
     end.
 
-%% @doc Broadcast a JSON-RPC Notification to every connection currently
-%% subscribed to `Topic'. Encoding happens once; each subscriber receives
-%% the same frame.
--spec publish(topic(), binary(), term()) -> ok.
+-doc """
+Send a Notification to every subscriber of `Topic`.
+
+Encoded once and delivered to each subscriber. Connections that have gone
+away are dropped from the group automatically — `pg` monitors its members —
+so there is nothing to clean up after a disconnect.
+""".
+-spec publish(topic(), binary(), json_rpc_json:value() | undefined) ->
+    ok | {error, json_rpc_json:encode_error()}.
 publish(Topic, Method, Params) when is_binary(Method) ->
-    Frame = encode_notification(Method, Params),
-    Members = pg:get_members(?SCOPE, group_name(Topic)),
-    lists:foreach(
-        fun(Pid) -> Pid ! {json_rpc_push, Frame} end,
-        Members
-    ),
-    ok.
+    case encode_notification(Method, Params) of
+        {ok, Frame} ->
+            lists:foreach(
+                fun(Pid) -> Pid ! {json_rpc_push, Frame} end,
+                pg:get_members(?SCOPE, group(Topic))
+            );
+        {error, _Reason} = Error ->
+            Error
+    end.
 
-%% Internal
+-doc "The connections currently subscribed to `Topic`.".
+-spec subscribers(topic()) -> [pid()].
+subscribers(Topic) ->
+    pg:get_members(?SCOPE, group(Topic)).
 
-group_name(Topic) ->
+%%% Internal
+
+group(Topic) ->
     {json_rpc_topic, Topic}.
 
 encode_notification(Method, Params) ->
-    Notification = notification_object(Method, Params),
-    jiffy:encode(Notification).
+    json_rpc_json:encode(notification(Method, Params)).
 
-%% Per the JSON-RPC 2.0 spec, `params' is an OPTIONAL member; omit it
-%% entirely when the caller passes `undefined' so we don't ship a
-%% `"params": null' object that some clients reject.
-notification_object(Method, undefined) ->
-    #{jsonrpc => <<"2.0">>, method => Method};
-notification_object(Method, Params) ->
-    #{jsonrpc => <<"2.0">>, method => Method, params => Params}.
+notification(Method, undefined) ->
+    #{jsonrpc => ?JSONRPC_VERSION, method => Method};
+notification(Method, Params) ->
+    #{jsonrpc => ?JSONRPC_VERSION, method => Method, params => Params}.
