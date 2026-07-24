@@ -104,7 +104,7 @@ websocket_handle(_Frame, State) ->
 -spec websocket_info(term(), map()) -> {cowboy_websocket:commands(), map()}.
 websocket_info({?REPLY_TAG, Pid, Outcome}, #{in_flight := InFlight} = State) ->
     case maps:take(Pid, InFlight) of
-        {{MonitorRef, _Id}, Rest} ->
+        {MonitorRef, Rest} ->
             %% Flushing takes the DOWN that follows this process's exit out
             %% of the mailbox, so it is never mistaken for a failure.
             erlang:demonitor(MonitorRef, [flush]),
@@ -114,12 +114,14 @@ websocket_info({?REPLY_TAG, Pid, Outcome}, #{in_flight := InFlight} = State) ->
     end;
 websocket_info({'DOWN', _MonitorRef, process, Pid, Reason}, #{in_flight := InFlight} = State) ->
     %% The dispatch process died without reporting. Everything a handler can
-    %% raise is already contained by the worker, so reaching here means it
-    %% was killed from outside — and the client is still owed an answer.
+    %% raise is already contained by the worker, so reaching here means it was
+    %% killed from outside — and the client is still owed an answer. The id is
+    %% not known here: recovering it would mean decoding every frame twice on
+    %% the hot path to serve a case that should never happen.
     case maps:take(Pid, InFlight) of
-        {{_Ref, Id}, Rest} ->
+        {_MonitorRef1, Rest} ->
             ?LOG_ERROR("json_rpc: WebSocket dispatch died: ~p", [Reason]),
-            Body = json_rpc_transport:error_body(Id, json_rpc_error:internal_error()),
+            Body = json_rpc_transport:error_body(json_rpc_error:internal_error()),
             {[{text, Body}], State#{in_flight := Rest}};
         error ->
             {[], State}
@@ -164,13 +166,14 @@ accept(Frame, #{in_flight := InFlight, context := Context} = State) ->
         Connection ! {?REPLY_TAG, self(), json_rpc_transport:handle(Frame, Context)}
     end),
     MonitorRef = erlang:monitor(process, Pid),
-    {[], State#{in_flight := InFlight#{Pid => {MonitorRef, peek_id(Frame)}}}}.
+    {[], State#{in_flight := InFlight#{Pid => MonitorRef}}}.
 
 frames({reply, IoData}) -> [{text, IoData}];
 frames(no_reply) -> [].
 
-%% Best-effort id for an error we have to answer before dispatching. Decoding
-%% twice is wasteful, but this only runs on the shedding path.
+%% Best-effort id for an error that has to be answered without dispatching.
+%% This decodes the frame a second time, so it is confined to the shedding
+%% path — the hot path must never pay it.
 peek_id(Frame) ->
     case json_rpc_json:decode(Frame) of
         {ok, Decoded} -> json_rpc_request:id_for_error(Decoded);

@@ -108,9 +108,11 @@ read_body(Req0, State) ->
             {ok, respond(413, Error, Req), State}
     end.
 
-%% Read in chunks and stop as soon as the cap is passed. `length' is set to
-%% what is still allowed rather than to the total cap, so a body that keeps
-%% coming cannot buffer close to twice the limit before being rejected.
+%% Read in chunks and stop as soon as the cap is passed. Cowboy's `length' is
+%% the amount it waits to accumulate before returning, not a ceiling, so it is
+%% asked for only what is still allowed plus the one byte that proves an
+%% overflow. Setting it to the full cap on every pass, as this once did, meant
+%% waiting for another whole cap's worth before the check below could reject.
 read_body(Req0, Max, Acc) ->
     Remaining = Max - byte_size(Acc),
     case cowboy_req:read_body(Req0, #{length => Remaining + 1, period => 5000}) of
