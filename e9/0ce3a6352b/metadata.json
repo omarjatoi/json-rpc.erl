@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "e90ce3a6352b",
+  "strategy": "manual-commit",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "elvis.config",
+    "flake.nix",
+    "rebar.config",
+    "src/json_rpc.app.src",
+    "src/json_rpc.erl",
+    "src/json_rpc_app.erl",
+    "src/json_rpc_dispatcher.erl",
+    "src/json_rpc_drain_handler.erl",
+    "src/json_rpc_http_handler.erl",
+    "src/json_rpc_listener.erl",
+    "src/json_rpc_response.erl",
+    "src/json_rpc_sup.erl",
+    "src/json_rpc_transport.erl",
+    "src/json_rpc_ws.erl",
+    "src/json_rpc_ws_handler.erl"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e9/0ce3a6352b/0/metadata.json",
+      "transcript": "/e9/0ce3a6352b/0/full.jsonl",
+      "compact_transcript": "/e9/0ce3a6352b/0/transcript.jsonl",
+      "content_hash": "/e9/0ce3a6352b/0/content_hash.txt",
+      "prompt": "/e9/0ce3a6352b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 107,
+    "cache_creation_tokens": 267373,
+    "cache_read_tokens": 6460986,
+    "output_tokens": 65566,
+    "api_call_count": 56
+  }
+}

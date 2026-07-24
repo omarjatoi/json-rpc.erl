@@ -1,0 +1,107 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_id": "e90ce3a6352b",
+  "session_id": "71ab646d-44f2-4a0e-8628-36a0b0a170a5",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T21:44:49.094465Z",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "flake.nix",
+    "rebar.config",
+    "elvis.config",
+    "src/json_rpc.app.src",
+    "src/json_rpc_dispatcher.erl",
+    "src/json_rpc_transport.erl",
+    "src/json_rpc_http_handler.erl",
+    "src/json_rpc_ws_handler.erl",
+    "src/json_rpc_listener.erl",
+    "src/json_rpc_drain_handler.erl",
+    "src/json_rpc_ws.erl",
+    "src/json_rpc.erl",
+    "src/json_rpc_sup.erl",
+    "src/json_rpc_app.erl",
+    "src/json_rpc_response.erl"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "45a2538cfa17",
+  "token_usage": {
+    "input_tokens": 107,
+    "cache_creation_tokens": 267373,
+    "cache_read_tokens": 6460986,
+    "output_tokens": 65566,
+    "api_call_count": 56
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-goal-2026-07-24T21:35:43.954145Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "goal"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "45a2538cfa17",
+      "timestamp": "2026-07-24T21:35:43.954145Z",
+      "native": {
+        "command": "/goal"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/goal",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T21:44:49.047041Z",
+    "agent_lines": 905,
+    "agent_removed": 520,
+    "human_added": 0,
+    "human_modified": 6,
+    "human_removed": 163,
+    "total_committed": 911,
+    "total_lines_changed": 1758,
+    "agent_percentage": 81.05802047781569,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1621,
+      "user_lines_removed": 169,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.json": 84,
+        "PLAN.md": 335,
+        "elvis.config": 55,
+        "flake.lock": 4,
+        "flake.nix": 10,
+        "include/json_rpc.hrl": 36,
+        "rebar.config": 35,
+        "src/json_rpc_config.erl": 125,
+        "src/json_rpc_error.erl": 207,
+        "src/json_rpc_json.erl": 89,
+        "src/json_rpc_methods.erl": 179,
+        "src/json_rpc_request.erl": 129,
+        "src/json_rpc_response.erl": 69,
+        "src/json_rpc_telemetry.erl": 128,
+        "src/json_rpc_worker.erl": 136
+      },
+      "user_removed_per_file": {
+        "flake.lock": 4,
+        "flake.nix": 5,
+        "rebar.config": 6,
+        "src/json_rpc_config.erl": 72,
+        "src/json_rpc_methods.erl": 52,
+        "src/json_rpc_worker.erl": 30
+      }
+    }
+  ]
+}

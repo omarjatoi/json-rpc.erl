@@ -1,0 +1,3 @@
+/goal Please fully review this implementation of the json-rpc protocol in Erlang. Review it for correctness, and idiomatic Erlang code. Once you have completed the review and identified gaps, come up with a plan to refactor this codebase to make it fully production ready. Once you have the plan, implement the full plan. Do not give up until you have a solid, clean, idiomatic Erlang implementation. As you go, feel free to update/upgrade our tools and packages. We use nix, and have a nix flake, so our toolchain is provided from that.
+
+Please continue with this goal. Commit at regular checkpoints with short descriptive commit messages
