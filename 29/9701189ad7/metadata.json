@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_version": "branch-v1",
+  "checkpoint_id": "299701189ad7",
+  "strategy": "manual-commit",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/ci.yml",
+    "Makefile",
+    "README.md",
+    "src/json_rpc_config.erl",
+    "src/json_rpc_worker.erl",
+    "test/json_rpc_unit_SUITE.erl"
+  ],
+  "sessions": [
+    {
+      "metadata": "/29/9701189ad7/0/metadata.json",
+      "transcript": "/29/9701189ad7/0/full.jsonl",
+      "compact_transcript": "/29/9701189ad7/0/transcript.jsonl",
+      "content_hash": "/29/9701189ad7/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 22427,
+    "cache_read_tokens": 3008190,
+    "output_tokens": 14324,
+    "api_call_count": 11
+  }
+}
