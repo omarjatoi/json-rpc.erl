@@ -1,0 +1,62 @@
+{
+  "cli_version": "0.7.8",
+  "checkpoint_id": "628266bc38dc",
+  "session_id": "71ab646d-44f2-4a0e-8628-36a0b0a170a5",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T22:03:37.611213Z",
+  "branch": "production-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/json_rpc_http_handler.erl",
+    "src/json_rpc_ws_handler.erl"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "45a2538cfa17",
+  "checkpoint_transcript_start": 574,
+  "transcript_lines_at_start": 574,
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 12945,
+    "cache_read_tokens": 2644571,
+    "output_tokens": 6342,
+    "api_call_count": 9
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-goal-2026-07-24T21:35:43.954145Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "goal"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "45a2538cfa17",
+      "timestamp": "2026-07-24T21:35:43.954145Z",
+      "native": {
+        "command": "/goal"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/goal",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T22:03:37.579685Z",
+    "agent_lines": 16,
+    "agent_removed": 11,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 16,
+    "total_lines_changed": 27,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
